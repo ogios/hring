@@ -11,6 +11,7 @@ use std::{
     path::Path,
     sync::mpsc::{self, Receiver, Sender},
     thread,
+    time::Duration,
 };
 
 use crate::{
@@ -21,6 +22,11 @@ use crate::{
 
 /// Maps a lowercased application name to its exec command and resolved icon path.
 type AppLookup = HashMap<String, (String, Option<String>)>;
+
+/// How long the background rescan waits before it starts. The cached data
+/// already keeps the UI complete, so the icon-index walk is held back until the
+/// window has shown its first frames and the startup animation has settled.
+const BACKGROUND_RESCAN_DELAY: Duration = Duration::from_millis(300);
 
 /// Decodes application icons on a background thread.
 ///
@@ -148,12 +154,6 @@ impl Default for Hring {
         let apps = config::get_app_links_from_cache();
         let binds = config::get_binds_from_cache();
 
-        // The caches already hold everything the first frame needs, so only
-        // rebuild them when one is missing or older than its inputs. A normal
-        // launch then skips the icon-index walk and the desktop-entry scan.
-        let needs_rescan =
-            apps.is_none() || binds.is_none() || !config::caches_are_fresh(&glocal_config);
-
         let (sender_config_loader_to_update, receiver_update_from_config_loader): (
             Sender<Vec<Group>>,
             Receiver<Vec<Group>>,
@@ -174,44 +174,45 @@ impl Default for Hring {
             Receiver<Vec<AppLink>>,
         ) = mpsc::channel();
 
-        // config_loader thread, only when the caches need rebuilding.
-        if needs_rescan {
-            thread::spawn(move || {
-                let (app_links, hash_map) = Self::search_app_links(glocal_config.pathes);
-                let conf_groups = config::get_binds_from_config();
+        // config_loader thread. It waits out the startup animation, then
+        // rescans in the background and refreshes both caches.
+        thread::spawn(move || {
+            thread::sleep(BACKGROUND_RESCAN_DELAY);
 
-                let groups: Vec<Group> = conf_groups
-                    .into_iter()
-                    .map(|g| {
-                        let apps: Vec<App> = g
-                            .apps
-                            .into_iter()
-                            .filter_map(|a| {
-                                if let Some((exec, icon)) = hash_map.get(&a.name.to_lowercase()) {
-                                    Some(App {
-                                        bind: a.bind,
-                                        name: a.name,
-                                        exec: exec.clone(),
-                                        icon: icon.clone(),
-                                    })
-                                } else {
-                                    println!("App {} not fround!", a.name);
-                                    None
-                                }
-                            })
-                            .collect();
+            let (app_links, hash_map) = Self::search_app_links(glocal_config.pathes);
+            let conf_groups = config::get_binds_from_config();
 
-                        Group { bind: g.bind, apps }
-                    })
-                    .collect();
+            let groups: Vec<Group> = conf_groups
+                .into_iter()
+                .map(|g| {
+                    let apps: Vec<App> = g
+                        .apps
+                        .into_iter()
+                        .filter_map(|a| {
+                            if let Some((exec, icon)) = hash_map.get(&a.name.to_lowercase()) {
+                                Some(App {
+                                    bind: a.bind,
+                                    name: a.name,
+                                    exec: exec.clone(),
+                                    icon: icon.clone(),
+                                })
+                            } else {
+                                println!("App {} not fround!", a.name);
+                                None
+                            }
+                        })
+                        .collect();
 
-                config::create_new_cache_for_groups(&groups);
-                config::create_new_cache_for_app_links(&app_links);
+                    Group { bind: g.bind, apps }
+                })
+                .collect();
 
-                _ = sender_config_loader_to_update.send(groups);
-                _ = sender_config_loader_to_search.send(app_links);
-            });
-        }
+            config::create_new_cache_for_groups(&groups);
+            config::create_new_cache_for_app_links(&app_links);
+
+            _ = sender_config_loader_to_update.send(groups);
+            _ = sender_config_loader_to_search.send(app_links);
+        });
 
         // search thread
         thread::spawn(move || {

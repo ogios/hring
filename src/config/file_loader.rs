@@ -3,17 +3,7 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, version 3.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
-
-/// Modification time of a file, without reading its contents. Used to decide
-/// whether a cache is still up to date.
-pub fn modified_time(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).ok()?.modified().ok()
-}
+use std::{fs, path::PathBuf, time::SystemTime};
 
 pub fn read_config_file(path: &PathBuf) -> Option<(String, SystemTime)> {
     let content = fs::read_to_string(path).ok()?;
