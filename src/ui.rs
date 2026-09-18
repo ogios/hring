@@ -391,31 +391,40 @@ impl Hring {
                             ))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.x = 12.0;
 
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(ap.search_prompt.as_str())
-                                            .font(search_font.clone())
-                                            .color(prompt_color)
-                                            .strong(),
-                                    );
+                                // A fixed-height row is allocated first, so the
+                                // prompt and the field are centered vertically
+                                // against the full bar instead of being
+                                // top-aligned by the first widget added.
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(ui.available_width(), ap.search_bar_height),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 12.0;
 
-                                    ui.add_sized(
-                                        [ui.available_width(), ap.search_bar_height],
-                                        egui::TextEdit::singleline(&mut self.search_text)
-                                            .font(search_font.clone())
-                                            .text_color(font_color)
-                                            .hint_text(
-                                                RichText::new("Search applications...")
-                                                    .color(Self::with_alpha(font_color, 90)),
-                                            )
-                                            .hint_text_font(search_font.clone())
-                                            .frame(false)
-                                            .margin(egui::Margin::ZERO)
-                                            .vertical_align(egui::Align::Center),
-                                    )
-                                })
+                                        ui.label(
+                                            RichText::new(ap.search_prompt.as_str())
+                                                .font(search_font.clone())
+                                                .color(prompt_color)
+                                                .strong(),
+                                        );
+
+                                        ui.add_sized(
+                                            [ui.available_width(), ap.search_bar_height],
+                                            egui::TextEdit::singleline(&mut self.search_text)
+                                                .font(search_font.clone())
+                                                .text_color(font_color)
+                                                .hint_text(
+                                                    RichText::new("Search applications...")
+                                                        .color(Self::with_alpha(font_color, 90)),
+                                                )
+                                                .hint_text_font(search_font.clone())
+                                                .frame(false)
+                                                .margin(egui::Margin::ZERO)
+                                                .vertical_align(egui::Align::Center),
+                                        )
+                                    },
+                                )
                                 .inner
                             });
 
