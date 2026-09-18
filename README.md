@@ -57,6 +57,18 @@ cargo build --release
 # The binary will be available at target/release/hring
 ```
 
+### Build an Arch package
+
+`PKGBUILD` contains a `pkgver()` function that derives the version from git
+(`git describe`, or commit count + short hash when there are no tags). Every new
+commit therefore gets a unique version, and `makepkg -si` rebuilds instead of
+reinstalling a stale package.
+
+``` Bash
+makepkg -si     # rebuild + install (skips when the current commit is already built)
+makepkg -sif    # force a rebuild, e.g. after uncommitted local changes
+```
+
 ### Setup Execution
 To run `hring` from anywhere, copy the binary to your local bin directory:
 ``` Bash

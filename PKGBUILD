@@ -12,6 +12,20 @@ options=('!debug')
 source=()
 sha256sums=()
 
+# Derive pkgver from git so every commit produces a new, rebuild-forcing version.
+# Falls back to Cargo.toml version + commit count/hash when no tags exist.
+pkgver() {
+  cd "$startdir"
+  local desc base count
+  if desc=$(git describe --long --tags --abbrev=7 2>/dev/null); then
+    printf '%s' "$desc" | sed 's/^v//; s/\([^-]*-g\)/r\1/; s/-/./g'
+  else
+    base=$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+    count=$(git rev-list --count HEAD)
+    printf '%s.r%s.g%s' "${base:-0.2.0}" "$count" "$(git rev-parse --short=7 HEAD)"
+  fi
+}
+
 build() {
   cd "$startdir"
   cargo build --release --locked
