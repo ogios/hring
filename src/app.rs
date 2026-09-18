@@ -76,6 +76,15 @@ pub struct PendingDelete {
     pub app_index: usize,
 }
 
+/// Which page of the launcher is currently shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// Graph of groups and hotkeys — the quick keyboard launcher.
+    Keyboard,
+    /// Full list of installed applications with search.
+    AllApps,
+}
+
 pub struct Hring {
     pub apps: Vec<AppLink>,
     pub binds: Vec<Group>,
@@ -86,6 +95,7 @@ pub struct Hring {
     pub from_search_worker: Receiver<Vec<AppLink>>,
     pub was_updated_from_config_loader: bool,
     pub search_text: String,
+    pub view: View,
     pub selected_group: Option<usize>,
     pub pending_assign: Option<PendingAssign>,
     pub pending_delete: Option<PendingDelete>,
@@ -213,6 +223,7 @@ impl Default for Hring {
             from_search_worker: receiver_update_from_search,
             was_updated_from_config_loader: false,
             search_text: String::new(),
+            view: View::Keyboard,
             selected_group: None,
             pending_assign: None,
             pending_delete: None,

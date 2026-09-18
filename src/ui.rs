@@ -10,7 +10,7 @@ use eframe::egui::{
 };
 
 use crate::{
-    app::{AssignStage, Hring, PendingAssign, PendingDelete},
+    app::{AssignStage, Hring, PendingAssign, PendingDelete, View},
     config,
     data::{App, AppLink, ConfApp, ConfGroup, Group},
 };
@@ -43,13 +43,26 @@ impl eframe::App for Hring {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
 
-        let text_edit = self.create_left_panel(ctx, modal_active);
-
-        if !modal_active {
-            self.response_processing(&text_edit, ctx);
+        if let Some(view) = self.create_tab_bar(ctx) {
+            self.view = view;
         }
 
-        self.create_main_panel(ctx, modal_active);
+        match self.view {
+            View::Keyboard => {
+                if !modal_active {
+                    self.handle_hotkeys(ctx);
+                }
+
+                self.create_main_panel(ctx, modal_active);
+            }
+            View::AllApps => {
+                let text_edit = self.create_all_apps_panel(ctx, modal_active);
+
+                if !modal_active {
+                    self.handle_search(&text_edit, ctx);
+                }
+            }
+        }
 
         if let Some(confirmed) = self.show_delete_confirm(ctx) {
             if confirmed {
@@ -64,55 +77,202 @@ impl eframe::App for Hring {
 }
 
 impl Hring {
-    fn create_left_panel(&mut self, ctx: &eframe::egui::Context, input_locked: bool) -> Response {
-        let g = &self.graphic;
+    /// Top bar holding the page tabs. Returns the view selected this frame, if
+    /// the user clicked a tab.
+    fn create_tab_bar(&self, ctx: &eframe::egui::Context) -> Option<View> {
+        let track_color = Self::get_color32(self.graphic.left_panel_color);
+        let active_color = Self::get_color32(self.graphic.app_color_active);
+        let active_text_color = Self::get_color32(self.graphic.app_font_color_active);
+        let inactive_text_color = Self::get_color32(self.graphic.menu_items_font_color);
+        let hover_color = Self::get_color32(self.graphic.menu_items_hover_color);
+        let font_size = self.graphic.menu_items_font_size.max(15.0);
+
+        let items = [
+            (View::Keyboard, "Keyboard"),
+            (View::AllApps, "All Programs"),
+        ];
+
+        let segment_width = 180.0;
+        let height = 46.0;
+        let inset = 5.0;
+        let width = segment_width * items.len() as f32;
+
+        let active_index = match self.view {
+            View::Keyboard => 0,
+            View::AllApps => 1,
+        };
+
+        let mut requested_view = None;
+
+        egui::TopBottomPanel::top("tab_bar")
+            .frame(Frame::NONE)
+            .show_separator_line(false)
+            .show(ctx, |ui| {
+                ui.add_space(18.0);
+                ui.vertical_centered(|ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+
+                    let hovered_index = response.hover_pos().map(|pos| {
+                        ((pos.x - rect.left()) / segment_width)
+                            .floor()
+                            .clamp(0.0, items.len() as f32 - 1.0) as usize
+                    });
+
+                    let painter = ui.painter();
+
+                    // Track behind both segments.
+                    painter.rect_filled(rect, height / 2.0, track_color);
+
+                    // Subtle highlight on the segment the pointer is over.
+                    if let Some(index) = hovered_index
+                        && index != active_index
+                    {
+                        let segment_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.left() + segment_width * index as f32, rect.top()),
+                            Vec2::new(segment_width, height),
+                        );
+                        painter.rect_filled(segment_rect, height / 2.0, hover_color);
+                    }
+
+                    // Sliding pill under the selected segment, with a soft glow.
+                    let pill_rect = egui::Rect::from_min_size(
+                        egui::pos2(
+                            rect.left() + segment_width * active_index as f32 + inset,
+                            rect.top() + inset,
+                        ),
+                        Vec2::new(segment_width - inset * 2.0, height - inset * 2.0),
+                    );
+                    let pill_radius = (height - inset * 2.0) / 2.0;
+                    painter.rect_filled(
+                        pill_rect.expand(3.0),
+                        pill_radius + 3.0,
+                        Self::with_alpha(active_color, 55),
+                    );
+                    painter.rect_filled(pill_rect, pill_radius, active_color);
+                    painter.rect_stroke(
+                        pill_rect,
+                        pill_radius,
+                        egui::Stroke::new(1.5, Self::lighten(active_color, 0.45)),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    // Labels, drawn last so they sit on top of the pill.
+                    for (index, (_view, label)) in items.iter().enumerate() {
+                        let color = if index == active_index {
+                            active_text_color
+                        } else {
+                            inactive_text_color
+                        };
+
+                        painter.text(
+                            egui::pos2(
+                                rect.left() + segment_width * (index as f32 + 0.5),
+                                rect.center().y,
+                            ),
+                            Align2::CENTER_CENTER,
+                            *label,
+                            FontId::proportional(font_size),
+                            color,
+                        );
+                    }
+
+                    if let Some(index) = hovered_index {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+
+                        if response.clicked() {
+                            requested_view = Some(items[index].0);
+                        }
+                    }
+                });
+            });
+
+        requested_view
+    }
+
+    /// Full-page list of every installed application, with search, drawn on a
+    /// rounded card.
+    fn create_all_apps_panel(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        input_locked: bool,
+    ) -> Response {
+        let panel_color = Self::get_color32(self.graphic.main_panel_color);
+        let card_color = Self::with_alpha(Self::get_color32(self.graphic.left_panel_color), 240);
+        let font_color = Self::get_color32(self.graphic.menu_items_font_color);
+        let hover_color = Self::get_color32(self.graphic.menu_items_hover_color);
+        let font_size = self.graphic.menu_items_font_size;
 
         let mut app_to_execute = None;
         let mut assignment_request: Option<AppLink> = None;
 
-        let response = egui::SidePanel::left("all_apps_panel")
-            .min_width(g.left_panel_width)
-            .max_width(g.left_panel_width)
-            .frame(Frame::new().fill(Self::get_color32(g.left_panel_color)))
+        let text_edit = egui::CentralPanel::default()
+            .frame(Frame::NONE.fill(panel_color))
             .show(ctx, |ui| {
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new("All Programms")
-                        .color(Self::get_color32(g.menu_items_font_color))
-                        .size(g.menu_items_font_size),
+                let available = ui.available_rect_before_wrap();
+
+                let margin = 24.0;
+                let card_width = (available.width() - margin * 2.0).clamp(240.0, 720.0);
+                let card_height = (available.height() - margin * 2.0).max(160.0);
+
+                let card_rect = egui::Rect::from_center_size(
+                    available.center(),
+                    Vec2::new(card_width, card_height),
                 );
-                ui.separator();
 
-                let text_edit = ui.text_edit_singleline(&mut self.search_text);
-                ui.add_space(10.0);
+                // Soft drop shadow behind the card.
+                ui.painter().rect_filled(
+                    card_rect.expand(6.0),
+                    22.0,
+                    egui::Color32::from_black_alpha(70),
+                );
+                ui.painter().rect_filled(card_rect, 18.0, card_color);
 
-                ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            for app in &self.apps {
-                                let button_text = RichText::new(&app.name)
-                                    .color(Self::get_color32(g.menu_items_font_color))
-                                    .size(g.menu_items_font_size);
+                let inner_rect = card_rect.shrink2(Vec2::new(24.0, 20.0));
 
-                                let btn = egui::Button::selectable(false, button_text)
-                                    .fill(Self::get_color32(g.menu_items_hover_color));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(inner_rect), |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("All Programs").color(font_color).size(18.0));
+                        ui.add_space(8.0);
 
-                                let app_response = ui.add_sized([ui.available_width(), 20.0], btn);
+                        let text_edit = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::TextEdit::singleline(&mut self.search_text)
+                                .hint_text("Search applications..."),
+                        );
 
-                                // Right-click starts the two-key shortcut capture.
-                                if app_response.secondary_clicked() && !input_locked {
-                                    assignment_request = Some(app.clone());
+                        ui.add_space(10.0);
+
+                        ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let width = ui.available_width();
+
+                                for app in &self.apps {
+                                    let button_text =
+                                        RichText::new(&app.name).color(font_color).size(font_size);
+
+                                    let btn = egui::Button::selectable(false, button_text)
+                                        .fill(hover_color);
+
+                                    let app_response = ui.add_sized([width, 24.0], btn);
+
+                                    // Right-click starts the two-key shortcut capture.
+                                    if app_response.secondary_clicked() && !input_locked {
+                                        assignment_request = Some(app.clone());
+                                    }
+
+                                    if app_response.clicked() && !input_locked {
+                                        app_to_execute = Some(app.exec.clone());
+                                    };
                                 }
+                            });
 
-                                if app_response.clicked() && !input_locked {
-                                    app_to_execute = Some(app.exec.clone());
-                                };
-                            }
-                        })
-                    });
-
-                text_edit
+                        text_edit
+                    })
+                    .inner
+                })
+                .inner
             })
             .inner;
 
@@ -124,7 +284,7 @@ impl Hring {
             Self::exec_app(ctx, &exec_path);
         }
 
-        response
+        text_edit
     }
 
     /// Captures the next pressed key: the first one selects an existing group
@@ -426,7 +586,8 @@ impl Hring {
             });
     }
 
-    fn response_processing(&mut self, text_edit: &Response, ctx: &eframe::egui::Context) {
+    /// Handles typing in the search box of the "All Programs" page.
+    fn handle_search(&mut self, text_edit: &Response, ctx: &eframe::egui::Context) {
         let enter_pressed = ctx.input(|i| i.key_pressed(Key::Enter));
 
         if text_edit.changed() {
@@ -446,32 +607,33 @@ impl Hring {
                 text_edit.request_focus();
             }
         }
+    }
 
-        if !text_edit.has_focus() {
-            // Selecting a group must never launch an app in the same frame:
-            // even a single-app (or same-key) group requires two key presses.
-            let mut selection_changed = false;
+    /// Handles the group and application hotkeys of the keyboard launcher.
+    fn handle_hotkeys(&mut self, ctx: &eframe::egui::Context) {
+        // Selecting a group must never launch an app in the same frame:
+        // even a single-app (or same-key) group requires two key presses.
+        let mut selection_changed = false;
 
-            for (index, group) in self.binds.iter().enumerate() {
-                if let Some(key) = Self::get_key(&group.bind)
-                    && ctx.input(|i| i.key_pressed(key))
-                    && self.selected_group != Some(index)
-                {
-                    self.selected_group = Some(index);
-                    selection_changed = true;
-                }
-            }
-
-            if !selection_changed
-                && let Some(group) = self.selected_group.and_then(|index| self.binds.get(index))
+        for (index, group) in self.binds.iter().enumerate() {
+            if let Some(key) = Self::get_key(&group.bind)
+                && ctx.input(|i| i.key_pressed(key))
+                && self.selected_group != Some(index)
             {
-                for app in &group.apps {
-                    if let Some(key) = Self::get_key(&app.bind)
-                        && ctx.input(|i| i.key_pressed(key))
-                    {
-                        Self::exec_app(ctx, &app.exec);
-                        break;
-                    }
+                self.selected_group = Some(index);
+                selection_changed = true;
+            }
+        }
+
+        if !selection_changed
+            && let Some(group) = self.selected_group.and_then(|index| self.binds.get(index))
+        {
+            for app in &group.apps {
+                if let Some(key) = Self::get_key(&app.bind)
+                    && ctx.input(|i| i.key_pressed(key))
+                {
+                    Self::exec_app(ctx, &app.exec);
+                    break;
                 }
             }
         }

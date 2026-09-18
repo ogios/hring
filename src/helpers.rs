@@ -372,4 +372,20 @@ impl Hring {
     pub fn get_color32(rgba: (u8, u8, u8, u8)) -> Color32 {
         Color32::from_rgba_unmultiplied(rgba.0, rgba.1, rgba.2, rgba.3)
     }
+
+    /// Replaces the alpha channel of `color`, keeping its RGB values.
+    pub fn with_alpha(color: Color32, alpha: u8) -> Color32 {
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+    }
+
+    /// Mixes `color` toward white by `amount` (`0.0` keeps the color, `1.0`
+    /// returns white), used for the highlight rim of the active tab.
+    pub fn lighten(color: Color32, amount: f32) -> Color32 {
+        let mix = |channel: u8| {
+            let channel = f32::from(channel);
+            (channel + (255.0 - channel) * amount).round() as u8
+        };
+
+        Color32::from_rgba_unmultiplied(mix(color.r()), mix(color.g()), mix(color.b()), color.a())
+    }
 }
