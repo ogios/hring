@@ -9,7 +9,11 @@ use eframe::egui::{
     self, Align2, FontId, Frame, Key, Response, RichText, ScrollArea, Vec2, ViewportCommand,
 };
 
-use crate::app::Hring;
+use crate::{
+    app::{AssignStage, Hring, PendingAssign},
+    config,
+    data::{App, AppLink, ConfApp, ConfGroup, Group},
+};
 
 impl eframe::App for Hring {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
@@ -24,23 +28,33 @@ impl eframe::App for Hring {
             self.apps = apps;
         }
 
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if self.pending_assign.is_some() {
+            // While a shortcut is being assigned the next key press is the bind,
+            // so it must not close the window or trigger a normal hotkey.
+            self.handle_pending_assign(ctx);
+        } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
 
         let text_edit = self.create_left_panel(ctx);
 
-        self.response_processing(&text_edit, ctx);
+        if self.pending_assign.is_none() {
+            self.response_processing(&text_edit, ctx);
+        }
 
         self.create_main_panel(ctx);
+
+        self.show_assign_overlay(ctx);
     }
 }
 
 impl Hring {
     fn create_left_panel(&mut self, ctx: &eframe::egui::Context) -> Response {
         let g = &self.graphic;
+        let assigning = self.pending_assign.is_some();
 
         let mut app_to_execute = None;
+        let mut assignment_request: Option<AppLink> = None;
 
         let response = egui::SidePanel::left("all_apps_panel")
             .min_width(g.left_panel_width)
@@ -70,7 +84,14 @@ impl Hring {
                                 let btn = egui::Button::selectable(false, button_text)
                                     .fill(Self::get_color32(g.menu_items_hover_color));
 
-                                if ui.add_sized([ui.available_width(), 20.0], btn).clicked() {
+                                let app_response = ui.add_sized([ui.available_width(), 20.0], btn);
+
+                                // Right-click starts the two-key shortcut capture.
+                                if app_response.secondary_clicked() && !assigning {
+                                    assignment_request = Some(app.clone());
+                                }
+
+                                if app_response.clicked() && !assigning {
                                     app_to_execute = Some(app.exec.clone());
                                 };
                             }
@@ -81,11 +102,165 @@ impl Hring {
             })
             .inner;
 
+        if let Some(app) = assignment_request {
+            self.pending_assign = Some(PendingAssign::new(app));
+        }
+
         if let Some(exec_path) = app_to_execute {
             Self::exec_app(ctx, &exec_path);
         }
 
         response
+    }
+
+    /// Captures the next pressed key: the first one selects an existing group
+    /// (or creates a new one), the second becomes the app's launch key.
+    /// `Escape` cancels at any point.
+    fn handle_pending_assign(&mut self, ctx: &eframe::egui::Context) {
+        let pressed_key = ctx.input(|i| {
+            i.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    ..
+                } => Some(*key),
+                _ => None,
+            })
+        });
+
+        let Some(key) = pressed_key else {
+            return;
+        };
+
+        if key == Key::Escape {
+            self.pending_assign = None;
+            return;
+        }
+
+        let Some(pending) = self.pending_assign.as_mut() else {
+            return;
+        };
+
+        let bind = key.name().to_ascii_lowercase();
+
+        match pending.stage {
+            AssignStage::GroupKey => {
+                // Reuse an existing group with the same bind, otherwise remember
+                // the bind and create the group once the app key arrives.
+                pending.group_index = self
+                    .binds
+                    .iter()
+                    .position(|group| group.bind.eq_ignore_ascii_case(&bind));
+                pending.new_group_bind = pending.group_index.is_none().then_some(bind);
+                pending.stage = AssignStage::AppKey;
+            }
+            AssignStage::AppKey => {
+                let index = match pending.group_index {
+                    Some(index) => index,
+                    None => {
+                        let group_bind = pending
+                            .new_group_bind
+                            .clone()
+                            .expect("New group bind must be captured before the app bind!");
+
+                        self.binds.push(Group {
+                            bind: group_bind,
+                            apps: Vec::new(),
+                        });
+
+                        self.binds.len() - 1
+                    }
+                };
+
+                let app = pending.app.clone();
+
+                if let Some(group) = self.binds.get_mut(index) {
+                    // Drop a previous entry for this app and any app that
+                    // already uses the freshly captured key.
+                    group
+                        .apps
+                        .retain(|a| a.name != app.name && !a.bind.eq_ignore_ascii_case(&bind));
+                    group.apps.push(App {
+                        bind,
+                        name: app.name,
+                        exec: app.exec,
+                        icon: app.icon,
+                    });
+                }
+
+                self.pending_assign = None;
+                self.persist_binds();
+            }
+        }
+    }
+
+    /// Converts the in-memory groups back into the configuration layout and
+    /// writes both `binds.toml` and its cache.
+    fn persist_binds(&self) {
+        let conf_groups: Vec<ConfGroup> = self
+            .binds
+            .iter()
+            .map(|group| ConfGroup {
+                bind: group.bind.clone(),
+                apps: group
+                    .apps
+                    .iter()
+                    .map(|app| ConfApp {
+                        bind: app.bind.clone(),
+                        name: app.name.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        config::save_binds_config(conf_groups);
+        config::create_new_cache_for_groups(&self.binds);
+    }
+
+    /// Small centered box shown while waiting for the two shortcut keys.
+    fn show_assign_overlay(&self, ctx: &eframe::egui::Context) {
+        let Some(pending) = &self.pending_assign else {
+            return;
+        };
+
+        let (title, detail) = match pending.stage {
+            AssignStage::GroupKey => (
+                "1. Press the GROUP key",
+                String::from("An existing group opens, a new one is created."),
+            ),
+            AssignStage::AppKey => {
+                let group = match pending.group_index {
+                    Some(index) => self
+                        .binds
+                        .get(index)
+                        .map(|group| format!("Group [{}]", group.bind))
+                        .unwrap_or_else(|| String::from("Group [?]")),
+                    None => format!(
+                        "New group [{}]",
+                        pending.new_group_bind.as_deref().unwrap_or("?")
+                    ),
+                };
+
+                ("2. Press the APP key", group)
+            }
+        };
+
+        egui::Window::new("Assign shortcut")
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(&pending.app.name).strong().size(18.0));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(title).size(16.0));
+                    ui.label(RichText::new(detail).weak());
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Esc — cancel").weak());
+                });
+            });
     }
 
     fn response_processing(&mut self, text_edit: &Response, ctx: &eframe::egui::Context) {
@@ -147,13 +322,18 @@ impl Hring {
         // Pointer input is sampled once per frame and hit-tested manually against
         // the painted shapes, since the graph is drawn with a raw `Painter`
         // instead of interactive egui widgets.
-        let pointer = ctx.input(|i| {
-            let clicked = i
-                .pointer
-                .primary_clicked()
-                .then(|| i.pointer.interact_pos());
-            (clicked.flatten(), i.pointer.hover_pos())
-        });
+        let pointer = if self.pending_assign.is_some() {
+            // Ignore graph clicks while a shortcut is being assigned.
+            (None, None)
+        } else {
+            ctx.input(|i| {
+                let clicked = i
+                    .pointer
+                    .primary_clicked()
+                    .then(|| i.pointer.interact_pos());
+                (clicked.flatten(), i.pointer.hover_pos())
+            })
+        };
         let (click_pos, hover_pos) = pointer;
 
         let mut app_to_execute: Option<String> = None;

@@ -93,6 +93,14 @@ pub fn get_binds_from_config() -> Vec<ConfGroup> {
     }
 }
 
+/// Writes the current groups and their app binds back to `binds.toml`, so
+/// shortcuts assigned from the UI survive a restart.
+pub fn save_binds_config(groups: Vec<ConfGroup>) {
+    let binds_config = BindsConfig { groups };
+    let config_string = converter::convert_struct_in_toml(&binds_config);
+    file_loader::create_config_file_from_string(&binds_config_path(), &config_string);
+}
+
 pub fn create_new_cache_for_groups(groups: &Vec<Group>) {
     let cache_vec = converter::convert_struct_in_cache(groups);
     file_loader::create_cache_file_from_slice(&binds_cache_path(), &cache_vec);

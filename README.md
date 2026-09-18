@@ -22,6 +22,8 @@ The project configuration was divided into three files:
 
 **You don't need to create them manually.** The Hring Launcher automatically creates configuration files in `~/.config/hring/` when you first launch it. You can edit them afterward. 
 
+You can also assign hotkeys without touching `binds.toml`: **right-click an application in the left panel**. A small box appears and asks for two keys — press the **group key** first (an existing group is selected, or a new one is created) and then the **application key**. Press `Esc` to cancel. `binds.toml` is updated automatically.
+
 If the application doesn't launch after editing the configuration files, the error is most likely due to incorrect formatting. Try deleting them and letting the launcher create new ones.
 
 ### Examples

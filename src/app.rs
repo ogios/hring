@@ -22,6 +22,38 @@ use crate::{
 /// Maps a lowercased application name to its exec command and resolved icon path.
 type AppLookup = HashMap<String, (String, Option<String>)>;
 
+/// Which key the user is expected to press next while editing a bind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignStage {
+    /// Capturing the bind that selects (or creates) the group.
+    GroupKey,
+    /// Capturing the bind that launches the application.
+    AppKey,
+}
+
+/// Shortcut assignment in progress. While it is `Some`, the launcher captures
+/// the next two key presses instead of handling them as normal hotkeys.
+#[derive(Debug, Clone)]
+pub struct PendingAssign {
+    pub app: AppLink,
+    /// Index of the target group; `None` until the group key is captured.
+    pub group_index: Option<usize>,
+    /// Bind of the group that is going to be created on the next captured key.
+    pub new_group_bind: Option<String>,
+    pub stage: AssignStage,
+}
+
+impl PendingAssign {
+    pub fn new(app: AppLink) -> Self {
+        Self {
+            app,
+            group_index: None,
+            new_group_bind: None,
+            stage: AssignStage::GroupKey,
+        }
+    }
+}
+
 pub struct Hring {
     pub apps: Vec<AppLink>,
     pub binds: Vec<Group>,
@@ -33,6 +65,7 @@ pub struct Hring {
     pub was_updated_from_config_loader: bool,
     pub search_text: String,
     pub selected_group: Option<usize>,
+    pub pending_assign: Option<PendingAssign>,
 }
 
 impl std::fmt::Debug for Hring {
@@ -158,6 +191,7 @@ impl Default for Hring {
             was_updated_from_config_loader: false,
             search_text: String::new(),
             selected_group: None,
+            pending_assign: None,
         }
     }
 }
