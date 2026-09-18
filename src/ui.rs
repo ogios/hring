@@ -80,7 +80,6 @@ impl Hring {
     /// Top bar holding the page tabs. Returns the view selected this frame, if
     /// the user clicked a tab.
     fn create_tab_bar(&self, ctx: &eframe::egui::Context) -> Option<View> {
-        let track_color = Self::get_color32(self.graphic.left_panel_color);
         let active_color = Self::get_color32(self.graphic.app_color_active);
         let active_text_color = Self::get_color32(self.graphic.app_font_color_active);
         let inactive_text_color = Self::get_color32(self.graphic.menu_items_font_color);
@@ -115,7 +114,9 @@ impl Hring {
         let mut requested_view = None;
 
         egui::TopBottomPanel::top("tab_bar")
-            .frame(Frame::NONE)
+            // Same fill as the pages below, so the tab strip does not read as a
+            // darker band above the central panel.
+            .frame(Frame::NONE.fill(Self::get_color32(self.graphic.main_panel_color)))
             .show_separator_line(false)
             .show(ctx, |ui| {
                 ui.add_space(18.0);
@@ -132,9 +133,6 @@ impl Hring {
                     });
 
                     let painter = ui.painter();
-
-                    // Track behind both segments.
-                    painter.rect_filled(rect, height / 2.0, track_color);
 
                     // Subtle highlight on the segment the pointer is over.
                     if let Some(index) = hovered_index
@@ -226,7 +224,6 @@ impl Hring {
             self.handle_hotkeys(ctx);
         }
 
-        let base_color = Self::get_color32(self.graphic.main_panel_color);
         let mut all_apps_text_edit = None;
 
         // While sliding, the pages are drawn at an offset, so pointer input would
@@ -234,7 +231,7 @@ impl Hring {
         let page_input_locked = modal_active || !settled;
 
         egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(base_color))
+            .frame(Frame::NONE.fill(Self::get_color32(self.graphic.main_panel_color)))
             .show(ctx, |ui| {
                 let viewport = ui.max_rect();
 
@@ -279,7 +276,6 @@ impl Hring {
         ctx: &eframe::egui::Context,
         input_locked: bool,
     ) -> Response {
-        let panel_color = Self::get_color32(self.graphic.main_panel_color);
         let font_color = Self::get_color32(self.graphic.menu_items_font_color);
         let hover_color = Self::get_color32(self.graphic.menu_items_hover_color);
         let placeholder_color = Self::get_color32(self.graphic.app_color_unactive);
@@ -307,7 +303,6 @@ impl Hring {
         let textures = &self.icon_textures;
 
         let page_rect = ui.max_rect();
-        ui.painter().rect_filled(page_rect, 0.0, panel_color);
 
         let text_edit = ui
             .scope_builder(
@@ -991,11 +986,8 @@ impl Hring {
         let mut hovering_app = false;
 
         {
-            let available_rect = ui.max_rect();
-            ui.painter()
-                .rect_filled(available_rect, 0.0, Self::get_color32(g.main_panel_color));
             let painter = ui.painter().clone();
-            let center = available_rect.center();
+            let center = ui.max_rect().center();
 
             if !self.binds.is_empty() {
                 let groups_count = self.binds.len();
