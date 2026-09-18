@@ -8,6 +8,7 @@ mod config;
 mod data;
 mod data_impl;
 mod helpers;
+mod icon;
 mod ui;
 
 use app::Hring;

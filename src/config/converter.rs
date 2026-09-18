@@ -29,12 +29,13 @@ where
     toml::from_str(content).expect("Cannot convert toml into string!")
 }
 
-// TODO: Fix error handling (if file has bug, user has to delete)
-pub fn convert_cache_in_structure<T>(content: &[u8]) -> T
+/// Decodes a cache file, returning `None` when the cache is missing, corrupt or
+/// was written by an older version of the program with an incompatible layout.
+pub fn convert_cache_in_structure<T>(content: &[u8]) -> Option<T>
 where
     T: Decode<()>,
 {
     bincode::decode_from_slice(content, bincode::config::standard())
-        .expect("Cannot convert bincode into struct!")
-        .0
+        .ok()
+        .map(|(value, _)| value)
 }

@@ -3,11 +3,12 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, version 3.
 
+use eframe::egui::TextureHandle;
 use freedesktop_entry_parser::parse_entry;
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::Path,
     sync::mpsc::{self, Receiver, Sender},
     thread,
 };
@@ -15,19 +16,32 @@ use std::{
 use crate::{
     config,
     data::{App, AppLink, Graphic, Group},
+    icon::IconIndex,
 };
 
-#[derive(Debug)]
+/// Maps a lowercased application name to its exec command and resolved icon path.
+type AppLookup = HashMap<String, (String, Option<String>)>;
+
 pub struct Hring {
     pub apps: Vec<AppLink>,
     pub binds: Vec<Group>,
     pub graphic: Graphic,
+    pub icon_textures: HashMap<String, Option<TextureHandle>>,
     pub from_config_loader: Receiver<Vec<Group>>,
     pub to_search_worker: Sender<String>,
     pub from_search_worker: Receiver<Vec<AppLink>>,
     pub was_updated_from_config_loader: bool,
     pub search_text: String,
     pub selected_group: Option<usize>,
+}
+
+impl std::fmt::Debug for Hring {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hring")
+            .field("apps", &self.apps)
+            .field("binds", &self.binds)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for Hring {
@@ -69,11 +83,12 @@ impl Default for Hring {
                         .apps
                         .into_iter()
                         .filter_map(|a| {
-                            if let Some(exec) = hash_map.get(&a.name.to_lowercase()) {
+                            if let Some((exec, icon)) = hash_map.get(&a.name.to_lowercase()) {
                                 Some(App {
                                     bind: a.bind,
                                     name: a.name,
                                     exec: exec.clone(),
+                                    icon: icon.clone(),
                                 })
                             } else {
                                 println!("App {} not fround!", a.name);
@@ -136,6 +151,7 @@ impl Default for Hring {
             apps: Vec::new(),
             binds: binds.unwrap_or_default(),
             graphic,
+            icon_textures: HashMap::new(),
             from_config_loader: receiver_update_from_config_loader,
             to_search_worker: sender_update_to_search,
             from_search_worker: receiver_update_from_search,
@@ -148,7 +164,9 @@ impl Default for Hring {
 
 impl Hring {
     // TODO: To Rework
-    fn search_app_links(pathes: Vec<String>) -> (Vec<AppLink>, HashMap<String, String>) {
+    fn search_app_links(pathes: Vec<String>) -> (Vec<AppLink>, AppLookup) {
+        let icon_index = IconIndex::build();
+
         let mut apps: Vec<Option<AppLink>> = Vec::new();
 
         for path in pathes {
@@ -156,7 +174,7 @@ impl Hring {
                 file_pathes
                     .into_iter()
                     .flatten()
-                    .for_each(|p| apps.push(Self::parse_desktop_file(&p.path())));
+                    .for_each(|p| apps.push(Self::parse_desktop_file(&p.path(), &icon_index)));
             } else {
                 println!("Path {path} cannot be read!");
             }
@@ -167,16 +185,16 @@ impl Hring {
         apps.sort_by(|a, b| a.name.cmp(&b.name));
         apps.dedup_by(|a, b| a.name == b.name);
 
-        let hash_map: HashMap<String, String> = apps
+        let hash_map: AppLookup = apps
             .iter()
-            .map(|a| (a.name.clone(), a.exec.clone()))
+            .map(|a| (a.name.clone(), (a.exec.clone(), a.icon.clone())))
             .collect();
 
         (apps, hash_map)
     }
 
     // TODO: To Rework
-    fn parse_desktop_file(path: &PathBuf) -> Option<AppLink> {
+    fn parse_desktop_file(path: &Path, icon_index: &IconIndex) -> Option<AppLink> {
         let entry = parse_entry(path).ok()?;
         let section = entry.section("Desktop Entry")?;
 
@@ -196,9 +214,16 @@ impl Hring {
             return None;
         }
 
+        let icon = section
+            .attr("Icon")
+            .first()
+            .and_then(|icon| icon_index.resolve(icon))
+            .map(|icon| icon.to_string_lossy().into_owned());
+
         Some(AppLink {
             name: name.clone().to_lowercase(),
             exec: exec.clone(),
+            icon,
         })
     }
 }

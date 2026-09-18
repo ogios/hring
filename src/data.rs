@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct AppLink {
     pub name: String,
     pub exec: String,
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -17,6 +18,7 @@ pub struct App {
     pub bind: String,
     pub name: String,
     pub exec: String,
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Encode, Decode)]

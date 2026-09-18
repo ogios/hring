@@ -67,21 +67,13 @@ pub fn get_global_config() -> GlobalConfig {
 }
 
 pub fn get_app_links_from_cache() -> Option<Vec<AppLink>> {
-    if let Some((cache_vec, _)) = file_loader::read_cache_file(&app_links_cache_path()) {
-        let app_links: Vec<AppLink> = converter::convert_cache_in_structure(&cache_vec);
-        Some(app_links)
-    } else {
-        None
-    }
+    let (cache_vec, _) = file_loader::read_cache_file(&app_links_cache_path())?;
+    converter::convert_cache_in_structure(&cache_vec)
 }
 
 pub fn get_binds_from_cache() -> Option<Vec<Group>> {
-    if let Some((cache_string, _)) = file_loader::read_cache_file(&binds_cache_path()) {
-        let groups: Vec<Group> = converter::convert_cache_in_structure(&cache_string);
-        Some(groups)
-    } else {
-        None
-    }
+    let (cache_string, _) = file_loader::read_cache_file(&binds_cache_path())?;
+    converter::convert_cache_in_structure(&cache_string)
 }
 
 pub fn get_binds_from_config() -> Vec<ConfGroup> {

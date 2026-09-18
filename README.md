@@ -76,6 +76,8 @@ I'm always happy if you decide to help develop the Hring. See the [Contributing]
 - `bincode`
 - `homedir`
 - `freedesktop_entry_parser`
+- `image`
+- `resvg`
 
 *Thanks to the creators of these crates for the excellent functionality and documentation.*
 

@@ -11,6 +11,15 @@ bincode = { version = "2.0.1"}
 homedir = "0.3.6"
 eframe = "0.33.3"
 freedesktop_entry_parser = "2.0.1"
+image = { version = "0.25", default-features = false, features = [
+    "bmp",
+    "gif",
+    "ico",
+    "jpeg",
+    "png",
+    "webp",
+] }
+resvg = { version = "0.45", default-features = false, features = ["raster-images"] }
 
 [profile.release]
 opt-level = 'z'     

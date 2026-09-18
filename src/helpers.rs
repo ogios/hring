@@ -4,7 +4,7 @@
 // the Free Software Foundation, version 3.
 
 use core::f32;
-use std::process::Command;
+use std::{path::Path, process::Command};
 
 use eframe::{
     egui::{self, Align2, Color32, FontId, Key, Pos2, Stroke, Vec2, ViewportCommand},
@@ -12,7 +12,7 @@ use eframe::{
     epaint::{self, PathShape, PathStroke},
 };
 
-use crate::app::Hring;
+use crate::{app::Hring, data::App, icon};
 
 impl Hring {
     pub fn get_key(key: &str) -> Option<Key> {
@@ -174,13 +174,31 @@ impl Hring {
         ));
     }
 
+    /// Uploads the texture of an icon on first use and remembers the result,
+    /// so broken or missing icons are not read from disk on every frame.
+    pub fn ensure_icon_texture(&mut self, ctx: &egui::Context, icon_path: &str) {
+        if self.icon_textures.contains_key(icon_path) {
+            return;
+        }
+
+        let texture = icon::load_color_image(Path::new(icon_path)).map(|image| {
+            ctx.load_texture(
+                format!("hring_icon:{icon_path}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            )
+        });
+
+        self.icon_textures.insert(icon_path.to_string(), texture);
+    }
+
     pub fn draw_apps(
         &self,
         painter: &egui::Painter,
         center: Pos2,
         crt_app_rad: f32,
         is_selected: bool,
-        bind_text: String,
+        app: &App,
     ) {
         let g = &self.graphic;
 
@@ -206,12 +224,63 @@ impl Hring {
 
         painter.circle_filled(app_pos, g.app_radius, app_color);
 
+        let texture = app
+            .icon
+            .as_deref()
+            .and_then(|icon_path| self.icon_textures.get(icon_path))
+            .and_then(|texture| texture.as_ref());
+
+        if let Some(texture) = texture {
+            let icon_rect = egui::Rect::from_center_size(app_pos, Vec2::splat(g.app_radius * 1.5));
+
+            painter.image(
+                texture.id(),
+                icon_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+
+            self.draw_app_bind_badge(
+                painter,
+                app_pos,
+                &app.bind,
+                app_color,
+                app_font_color,
+                app_font_size,
+            );
+        } else {
+            painter.text(
+                app_pos,
+                Align2::CENTER_CENTER,
+                &app.bind,
+                FontId::monospace(app_font_size),
+                app_font_color,
+            );
+        }
+    }
+
+    /// Draws a small keyboard shortcut badge on the rim of an app circle, so the
+    /// bind stays visible once the icon takes over the center of the circle.
+    fn draw_app_bind_badge(
+        &self,
+        painter: &egui::Painter,
+        app_pos: Pos2,
+        bind_text: &str,
+        badge_color: Color32,
+        text_color: Color32,
+        font_size: f32,
+    ) {
+        let badge_radius = self.graphic.app_radius * 0.4;
+        let badge_offset = self.graphic.app_radius * 0.62;
+        let badge_pos = app_pos + Vec2::new(badge_offset, badge_offset);
+
+        painter.circle_filled(badge_pos, badge_radius, badge_color);
         painter.text(
-            app_pos,
+            badge_pos,
             Align2::CENTER_CENTER,
             bind_text,
-            FontId::monospace(app_font_size),
-            app_font_color,
+            FontId::monospace(font_size * 0.8),
+            text_color,
         );
     }
 

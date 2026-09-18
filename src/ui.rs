@@ -116,7 +116,7 @@ impl Hring {
                 {
                     self.selected_group = Some(index);
                 }
-    
+
                 if self.selected_group == Some(index) {
                     group.apps.iter().for_each(|app| {
                         if let Some(key) = Self::get_key(&app.bind)
@@ -131,6 +131,17 @@ impl Hring {
     }
 
     fn create_main_panel(&mut self, ctx: &eframe::egui::Context) {
+        let icon_paths: Vec<String> = self
+            .binds
+            .iter()
+            .flat_map(|group| group.apps.iter())
+            .filter_map(|app| app.icon.clone())
+            .collect();
+
+        for icon_path in icon_paths {
+            self.ensure_icon_texture(ctx, &icon_path);
+        }
+
         let g = &self.graphic;
 
         egui::CentralPanel::default()
@@ -189,13 +200,7 @@ impl Hring {
                                 );
 
                                 // Draw Apps
-                                self.draw_apps(
-                                    &painter,
-                                    center,
-                                    crt_app_rad,
-                                    is_selected,
-                                    app.bind.clone(),
-                                );
+                                self.draw_apps(&painter, center, crt_app_rad, is_selected, app);
                             });
                         }
 
