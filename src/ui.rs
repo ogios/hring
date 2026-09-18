@@ -6,7 +6,7 @@
 use core::f32;
 
 use eframe::egui::{
-    self, Align2, FontId, Frame, Key, Response, RichText, ScrollArea, ViewportCommand,
+    self, Align2, FontId, Frame, Key, Response, RichText, ScrollArea, Vec2, ViewportCommand,
 };
 
 use crate::app::Hring;
@@ -144,6 +144,22 @@ impl Hring {
 
         let g = &self.graphic;
 
+        // Pointer input is sampled once per frame and hit-tested manually against
+        // the painted shapes, since the graph is drawn with a raw `Painter`
+        // instead of interactive egui widgets.
+        let pointer = ctx.input(|i| {
+            let clicked = i
+                .pointer
+                .primary_clicked()
+                .then(|| i.pointer.interact_pos());
+            (clicked.flatten(), i.pointer.hover_pos())
+        });
+        let (click_pos, hover_pos) = pointer;
+
+        let mut app_to_execute: Option<String> = None;
+        let mut group_to_select: Option<usize> = None;
+        let mut hovering_app = false;
+
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(Self::get_color32(g.main_panel_color)))
             .show(ctx, |ui| {
@@ -160,6 +176,23 @@ impl Hring {
 
                         let start_rad = step_rad * (index as f32);
                         let end_rad = start_rad + step_rad;
+
+                        // Click inside the wedge selects its group.
+                        if let Some(pos) = click_pos {
+                            let delta = pos - center;
+                            let mut angle = (-delta.y).atan2(delta.x);
+                            if angle < 0.0 {
+                                angle += f32::consts::TAU;
+                            }
+
+                            if delta.length() <= g.segment_radius
+                                && delta.length() >= g.center_radius
+                                && angle >= start_rad
+                                && angle <= end_rad
+                            {
+                                group_to_select = Some(index);
+                            }
+                        }
 
                         if !group.apps.is_empty() {
                             let apps_count = group.apps.len();
@@ -180,6 +213,24 @@ impl Hring {
 
                             group.apps.iter().enumerate().for_each(|(i, app)| {
                                 let crt_app_rad = apps_start_deg + g.apps_spacing_rad * i as f32;
+
+                                let app_pos = center
+                                    + Vec2::new(
+                                        g.app_offset * crt_app_rad.cos(),
+                                        g.app_offset * -crt_app_rad.sin(),
+                                    );
+
+                                if let Some(pos) = click_pos
+                                    && pos.distance(app_pos) <= g.app_radius
+                                {
+                                    app_to_execute = Some(app.exec.clone());
+                                }
+
+                                if let Some(pos) = hover_pos
+                                    && pos.distance(app_pos) <= g.app_radius
+                                {
+                                    hovering_app = true;
+                                }
 
                                 // Draw Lines
                                 self.draw_line(
@@ -226,5 +277,15 @@ impl Hring {
                     Self::get_color32(g.middle_text_color),
                 );
             });
+
+        if let Some(index) = group_to_select {
+            self.selected_group = Some(index);
+        }
+
+        if let Some(exec) = app_to_execute {
+            Self::exec_app(ctx, &exec);
+        } else if hovering_app {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
     }
 }
