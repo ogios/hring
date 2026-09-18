@@ -35,6 +35,7 @@ impl Default for AllPrograms {
             search_font_size: 26.0,
             search_bar_height: 56.0,
             search_padding_x: 20.0,
+            search_border_width: 2.0,
             search_corner_radius: 12.0,
             search_idle_alpha: 35,
             search_active_alpha: 80,

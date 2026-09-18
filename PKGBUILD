@@ -1,6 +1,6 @@
 # Maintainer: Xhelgi <helgi@proton.me>
 pkgname=hring
-pkgver=0.2.0.r30.gf01ed73
+pkgver=0.2.0.r31.gd58aa37
 pkgrel=1
 pkgdesc='Lightweight keyboard-driven application launcher with a graph-like interface'
 arch=('x86_64' 'aarch64')

@@ -294,6 +294,13 @@ impl Hring {
         let hover_color = Self::get_color32(self.graphic.menu_items_hover_color);
         let placeholder_color = Self::get_color32(self.graphic.app_color_unactive);
         let selection_color = Self::get_color32(self.graphic.app_color_active);
+        // Text drawn inside the inverted block cursor uses the panel colour, the
+        // way NeoVim swaps foreground and background under the cursor. Forced
+        // opaque: the panel colour itself carries alpha.
+        let cursor_text_color = {
+            let (r, g, b, _) = self.graphic.main_panel_color;
+            egui::Color32::from_rgb(r, g, b)
+        };
         // Snapshot the grid tuning now, so the draw closure only captures these
         // plain values instead of borrowing `self.graphic`.
         let ap = self.graphic.all_programs.clone();
@@ -359,19 +366,25 @@ impl Hring {
                         ui.add_space(10.0);
 
                         // NeoVim-style command bar: monospace prompt, large
-                        // type, and an accent border that lights up while search
-                        // mode is active.
+                        // type, and a border that lights up while search mode is
+                        // active. The stroke width is kept constant, because
+                        // egui counts it as part of the frame margin: changing
+                        // it would resize the bar and shove the grid down.
                         let search_font = egui::FontId::monospace(ap.search_font_size);
                         let prompt_color = if search_active {
                             selection_color
                         } else {
                             Self::with_alpha(font_color, 140)
                         };
-                        let bar_stroke = if search_active {
-                            Stroke::new(2.0, selection_color)
-                        } else {
-                            Stroke::new(1.0, Self::with_alpha(font_color, 45))
-                        };
+                        let border_width = ap.search_border_width.clamp(0.0, 8.0);
+                        let bar_stroke = Stroke::new(
+                            border_width,
+                            if search_active {
+                                selection_color
+                            } else {
+                                Self::with_alpha(font_color, 45)
+                            },
+                        );
                         let bar_fill = Self::with_alpha(
                             hover_color,
                             if search_active {
@@ -409,20 +422,82 @@ impl Hring {
                                                 .strong(),
                                         );
 
-                                        ui.add_sized(
-                                            [ui.available_width(), ap.search_bar_height],
-                                            egui::TextEdit::singleline(&mut self.search_text)
-                                                .font(search_font.clone())
-                                                .text_color(font_color)
-                                                .hint_text(
-                                                    RichText::new("Search applications...")
-                                                        .color(Self::with_alpha(font_color, 90)),
-                                                )
-                                                .hint_text_font(search_font.clone())
-                                                .frame(false)
-                                                .margin(egui::Margin::ZERO)
-                                                .vertical_align(egui::Align::Center),
+                                        // egui's thin caret is hidden; a
+                                        // NeoVim-style block is painted instead.
+                                        ui.visuals_mut().text_cursor.stroke = Stroke::NONE;
+                                        ui.visuals_mut().text_cursor.blink = false;
+
+                                        let v_margin = ((ap.search_bar_height
+                                            - ap.search_font_size * ap.text_line_height)
+                                            / 2.0)
+                                            .clamp(0.0, 127.0)
+                                            .round() as i8;
+
+                                        let output = egui::TextEdit::singleline(
+                                            &mut self.search_text,
                                         )
+                                        .font(search_font.clone())
+                                        .text_color(font_color)
+                                        .hint_text(
+                                            RichText::new("Search applications...")
+                                                .color(Self::with_alpha(font_color, 90)),
+                                        )
+                                        .hint_text_font(search_font.clone())
+                                        .frame(false)
+                                        .margin(egui::Margin::symmetric(0, v_margin))
+                                        .vertical_align(egui::Align::Center)
+                                        .desired_width(ui.available_width())
+                                        .show(ui);
+
+                                        if output.response.has_focus()
+                                            && let Some(range) = output.cursor_range
+                                        {
+                                            let local = egui::text_selection::text_cursor_state::cursor_rect(
+                                                &output.galley,
+                                                &range.primary,
+                                                ap.search_font_size,
+                                            );
+                                            let caret =
+                                                local.translate(output.galley_pos.to_vec2());
+
+                                            let under =
+                                                self.search_text.chars().nth(range.primary.index);
+                                            let painter = ui
+                                                .painter()
+                                                .with_clip_rect(output.text_clip_rect);
+
+                                            // The block covers the character to
+                                            // the right of the caret, exactly
+                                            // matching a monospace cell.
+                                            let (block_width, under) = match under {
+                                                Some(ch) => (
+                                                    ui.fonts_mut(|f| {
+                                                        f.glyph_width(&search_font, ch)
+                                                    })
+                                                    .max(4.0),
+                                                    Some(ch),
+                                                ),
+                                                None => (ap.search_font_size * 0.62, None),
+                                            };
+
+                                            let block = egui::Rect::from_min_size(
+                                                egui::pos2(caret.left(), caret.top()),
+                                                Vec2::new(block_width, caret.height()),
+                                            );
+                                            painter.rect_filled(block, 0.0, selection_color);
+
+                                            if let Some(ch) = under {
+                                                painter.text(
+                                                    block.center(),
+                                                    Align2::CENTER_CENTER,
+                                                    ch,
+                                                    search_font.clone(),
+                                                    cursor_text_color,
+                                                );
+                                            }
+                                        }
+
+                                        output.response
                                     },
                                 )
                                 .inner

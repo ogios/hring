@@ -118,6 +118,9 @@ pub struct AllPrograms {
     pub search_bar_height: f32,
     /// Horizontal padding inside the filter bar.
     pub search_padding_x: f32,
+    /// Border width of the filter bar. Constant across focus, so the bar never
+    /// resizes when search mode toggles.
+    pub search_border_width: f32,
     pub search_corner_radius: f32,
     /// Background alpha of the filter bar when search mode is idle/active.
     pub search_idle_alpha: u8,
