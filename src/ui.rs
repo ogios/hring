@@ -57,22 +57,7 @@ impl eframe::App for Hring {
             }
         }
 
-        match self.view {
-            View::Keyboard => {
-                if !modal_active {
-                    self.handle_hotkeys(ctx);
-                }
-
-                self.create_main_panel(ctx, modal_active);
-            }
-            View::AllApps => {
-                let text_edit = self.create_all_apps_panel(ctx, modal_active);
-
-                if !modal_active {
-                    self.handle_search(&text_edit, ctx);
-                }
-            }
-        }
+        self.draw_pages(ctx, modal_active);
 
         if let Some(confirmed) = self.show_delete_confirm(ctx) {
             if confirmed {
@@ -207,10 +192,74 @@ impl Hring {
         requested_view
     }
 
-    /// Full-page list of every installed application, with search, drawn on a
-    /// rounded card.
-    fn create_all_apps_panel(
+    /// Draws the active page and slides the two pages horizontally past each
+    /// other while the view changes.
+    fn draw_pages(&mut self, ctx: &eframe::egui::Context, modal_active: bool) {
+        let target = match self.view {
+            View::Keyboard => 0.0,
+            View::AllApps => 1.0,
+        };
+
+        // Lags behind `target`, so the pages move instead of snapping.
+        let anim = ctx.animate_value_with_time(egui::Id::new("page_slide"), target, 0.25);
+        let settled = (anim - target).abs() < 0.001;
+
+        // Hotkeys are only handled once the pages have settled, so a key press
+        // cannot land on a page that is still sliding.
+        if !modal_active && settled && self.view == View::Keyboard {
+            self.handle_hotkeys(ctx);
+        }
+
+        let base_color = Self::get_color32(self.graphic.main_panel_color);
+        let mut all_apps_text_edit = None;
+
+        // While sliding, the pages are drawn at an offset, so pointer input would
+        // be hit-tested at the wrong place. Lock it until the pages settle.
+        let page_input_locked = modal_active || !settled;
+
+        egui::CentralPanel::default()
+            .frame(Frame::NONE.fill(base_color))
+            .show(ctx, |ui| {
+                let viewport = ui.max_rect();
+
+                for (index, view) in [View::Keyboard, View::AllApps].into_iter().enumerate() {
+                    let offset = viewport.width() * (index as f32 - anim);
+
+                    // Skip a page once it has left the viewport completely.
+                    if offset <= -viewport.width() || offset >= viewport.width() {
+                        continue;
+                    }
+
+                    let page_rect = viewport.translate(Vec2::new(offset, 0.0));
+
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(page_rect), |ui| {
+                        ui.set_clip_rect(viewport);
+
+                        ui.push_id(index, |ui| match view {
+                            View::Keyboard => self.draw_keyboard_page(ui, ctx, page_input_locked),
+                            View::AllApps => {
+                                all_apps_text_edit =
+                                    Some(self.draw_all_apps_page(ui, ctx, page_input_locked));
+                            }
+                        });
+                    });
+                }
+            });
+
+        if !modal_active
+            && settled
+            && self.view == View::AllApps
+            && let Some(text_edit) = &all_apps_text_edit
+        {
+            self.handle_search(text_edit, ctx);
+        }
+    }
+
+    /// Full-page list of every installed application, with search. Draws into
+    /// the given page `ui`, so it can slide together with the tab bar.
+    fn draw_all_apps_page(
         &mut self,
+        ui: &mut egui::Ui,
         ctx: &eframe::egui::Context,
         input_locked: bool,
     ) -> Response {
@@ -222,50 +271,55 @@ impl Hring {
         let mut app_to_execute = None;
         let mut assignment_request: Option<AppLink> = None;
 
-        let text_edit = egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(panel_color).inner_margin(24.0))
-            .show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("All Programs").color(font_color).size(18.0));
-                    ui.add_space(8.0);
+        let page_rect = ui.max_rect();
+        ui.painter().rect_filled(page_rect, 0.0, panel_color);
 
-                    let text_edit = ui.add_sized(
-                        [ui.available_width(), 26.0],
-                        egui::TextEdit::singleline(&mut self.search_text)
-                            .hint_text("Search applications..."),
-                    );
+        let text_edit = ui
+            .scope_builder(
+                egui::UiBuilder::new().max_rect(page_rect.shrink(24.0)),
+                |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("All Programs").color(font_color).size(18.0));
+                        ui.add_space(8.0);
 
-                    ui.add_space(10.0);
+                        let text_edit = ui.add_sized(
+                            [ui.available_width(), 26.0],
+                            egui::TextEdit::singleline(&mut self.search_text)
+                                .hint_text("Search applications..."),
+                        );
 
-                    ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let width = ui.available_width();
+                        ui.add_space(10.0);
 
-                            for app in &self.apps {
-                                let button_text =
-                                    RichText::new(&app.name).color(font_color).size(font_size);
+                        ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let width = ui.available_width();
 
-                                let btn = egui::Button::selectable(false, button_text)
-                                    .fill(hover_color);
+                                for app in &self.apps {
+                                    let button_text =
+                                        RichText::new(&app.name).color(font_color).size(font_size);
 
-                                let app_response = ui.add_sized([width, 24.0], btn);
+                                    let btn = egui::Button::selectable(false, button_text)
+                                        .fill(hover_color);
 
-                                // Right-click starts the two-key shortcut capture.
-                                if app_response.secondary_clicked() && !input_locked {
-                                    assignment_request = Some(app.clone());
+                                    let app_response = ui.add_sized([width, 24.0], btn);
+
+                                    // Right-click starts the two-key shortcut capture.
+                                    if app_response.secondary_clicked() && !input_locked {
+                                        assignment_request = Some(app.clone());
+                                    }
+
+                                    if app_response.clicked() && !input_locked {
+                                        app_to_execute = Some(app.exec.clone());
+                                    };
                                 }
+                            });
 
-                                if app_response.clicked() && !input_locked {
-                                    app_to_execute = Some(app.exec.clone());
-                                };
-                            }
-                        });
-
-                    text_edit
-                })
-                .inner
-            })
+                        text_edit
+                    })
+                    .inner
+                },
+            )
             .inner;
 
         if let Some(app) = assignment_request {
@@ -638,7 +692,14 @@ impl Hring {
         }
     }
 
-    fn create_main_panel(&mut self, ctx: &eframe::egui::Context, input_locked: bool) {
+    /// Radial group/app graph for the keyboard launcher, drawn into the given
+    /// page `ui` so it can slide together with the tab bar.
+    fn draw_keyboard_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &eframe::egui::Context,
+        input_locked: bool,
+    ) {
         let icon_paths: Vec<String> = self
             .binds
             .iter()
@@ -682,137 +743,131 @@ impl Hring {
         let mut delete_request: Option<(usize, usize)> = None;
         let mut hovering_app = false;
 
-        egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(Self::get_color32(g.main_panel_color)))
-            .show(ctx, |ui| {
-                let available_rect = ctx.available_rect();
-                let painter = ui.painter().with_clip_rect(available_rect);
-                let center = available_rect.center();
+        {
+            let available_rect = ui.max_rect();
+            ui.painter()
+                .rect_filled(available_rect, 0.0, Self::get_color32(g.main_panel_color));
+            let painter = ui.painter().clone();
+            let center = available_rect.center();
 
-                if !self.binds.is_empty() {
-                    let groups_count = self.binds.len();
-                    let step_rad = f32::consts::TAU / groups_count as f32;
+            if !self.binds.is_empty() {
+                let groups_count = self.binds.len();
+                let step_rad = f32::consts::TAU / groups_count as f32;
 
-                    self.binds.iter().enumerate().for_each(|(index, group)| {
-                        let is_selected = self.selected_group.is_some_and(|s| s == index);
+                self.binds.iter().enumerate().for_each(|(index, group)| {
+                    let is_selected = self.selected_group.is_some_and(|s| s == index);
 
-                        let start_rad = step_rad * (index as f32);
-                        let end_rad = start_rad + step_rad;
+                    let start_rad = step_rad * (index as f32);
+                    let end_rad = start_rad + step_rad;
 
-                        // Click inside the wedge selects its group.
-                        if let Some(pos) = click_pos {
-                            let delta = pos - center;
-                            let mut angle = (-delta.y).atan2(delta.x);
-                            if angle < 0.0 {
-                                angle += f32::consts::TAU;
-                            }
-
-                            if delta.length() <= g.segment_radius
-                                && delta.length() >= g.center_radius
-                                && angle >= start_rad
-                                && angle <= end_rad
-                            {
-                                group_to_select = Some(index);
-                            }
+                    // Click inside the wedge selects its group.
+                    if let Some(pos) = click_pos {
+                        let delta = pos - center;
+                        let mut angle = (-delta.y).atan2(delta.x);
+                        if angle < 0.0 {
+                            angle += f32::consts::TAU;
                         }
 
-                        if !group.apps.is_empty() {
-                            let apps_count = group.apps.len();
-                            let center_rad = step_rad / 2.0 + start_rad;
-                            let apps_start_deg = center_rad
-                                - (((apps_count as i32 / 2) - 1) as f32 * g.apps_spacing_rad + {
-                                    if apps_count % 2 == 1 {
-                                        g.apps_spacing_rad
-                                    } else {
-                                        g.apps_spacing_rad / 2.0
-                                    }
-                                });
+                        if delta.length() <= g.segment_radius
+                            && delta.length() >= g.center_radius
+                            && angle >= start_rad
+                            && angle <= end_rad
+                        {
+                            group_to_select = Some(index);
+                        }
+                    }
 
-                            // Draw Radar
-                            if is_selected {
-                                self.draw_radar(&painter, center, start_rad, end_rad);
-                            }
-
-                            group.apps.iter().enumerate().for_each(|(i, app)| {
-                                let crt_app_rad = apps_start_deg + g.apps_spacing_rad * i as f32;
-
-                                let app_pos = center
-                                    + Vec2::new(
-                                        g.app_offset * crt_app_rad.cos(),
-                                        g.app_offset * -crt_app_rad.sin(),
-                                    );
-
-                                if let Some(pos) = click_pos
-                                    && pos.distance(app_pos) <= g.app_radius
-                                {
-                                    app_to_execute = Some(app.exec.clone());
+                    if !group.apps.is_empty() {
+                        let apps_count = group.apps.len();
+                        let center_rad = step_rad / 2.0 + start_rad;
+                        let apps_start_deg = center_rad
+                            - (((apps_count as i32 / 2) - 1) as f32 * g.apps_spacing_rad + {
+                                if apps_count % 2 == 1 {
+                                    g.apps_spacing_rad
+                                } else {
+                                    g.apps_spacing_rad / 2.0
                                 }
-
-                                // Right-click rewrites the launch key.
-                                if let Some(pos) = rebind_pos
-                                    && pos.distance(app_pos) <= g.app_radius
-                                {
-                                    rebind_request = Some((index, i));
-                                }
-
-                                // Middle-click asks to delete the shortcut.
-                                if let Some(pos) = delete_pos
-                                    && pos.distance(app_pos) <= g.app_radius
-                                {
-                                    delete_request = Some((index, i));
-                                }
-
-                                if let Some(pos) = hover_pos
-                                    && pos.distance(app_pos) <= g.app_radius
-                                {
-                                    hovering_app = true;
-                                }
-
-                                // Draw Lines
-                                self.draw_line(
-                                    &painter,
-                                    center,
-                                    center_rad,
-                                    crt_app_rad,
-                                    is_selected,
-                                );
-
-                                // Draw AppText
-                                self.draw_app_text(
-                                    &painter,
-                                    &app.name,
-                                    center,
-                                    crt_app_rad,
-                                    is_selected,
-                                );
-
-                                // Draw Apps
-                                self.draw_apps(&painter, center, crt_app_rad, is_selected, app);
                             });
+
+                        // Draw Radar
+                        if is_selected {
+                            self.draw_radar(&painter, center, start_rad, end_rad);
                         }
 
-                        // Draw Segment
-                        self.draw_segment(
-                            &painter,
-                            center,
-                            start_rad,
-                            end_rad,
-                            is_selected,
-                            group.bind.clone(),
-                        );
-                    });
-                }
+                        group.apps.iter().enumerate().for_each(|(i, app)| {
+                            let crt_app_rad = apps_start_deg + g.apps_spacing_rad * i as f32;
 
-                // Draw CenterCircle
-                painter.circle_filled(center, g.center_radius, Self::get_color32(g.center_color));
-                painter.text(
-                    center,
-                    Align2::CENTER_CENTER,
-                    g.middle_text.clone(),
-                    FontId::monospace(g.middle_text_size),
-                    Self::get_color32(g.middle_text_color),
-                );
-            });
+                            let app_pos = center
+                                + Vec2::new(
+                                    g.app_offset * crt_app_rad.cos(),
+                                    g.app_offset * -crt_app_rad.sin(),
+                                );
+
+                            if let Some(pos) = click_pos
+                                && pos.distance(app_pos) <= g.app_radius
+                            {
+                                app_to_execute = Some(app.exec.clone());
+                            }
+
+                            // Right-click rewrites the launch key.
+                            if let Some(pos) = rebind_pos
+                                && pos.distance(app_pos) <= g.app_radius
+                            {
+                                rebind_request = Some((index, i));
+                            }
+
+                            // Middle-click asks to delete the shortcut.
+                            if let Some(pos) = delete_pos
+                                && pos.distance(app_pos) <= g.app_radius
+                            {
+                                delete_request = Some((index, i));
+                            }
+
+                            if let Some(pos) = hover_pos
+                                && pos.distance(app_pos) <= g.app_radius
+                            {
+                                hovering_app = true;
+                            }
+
+                            // Draw Lines
+                            self.draw_line(&painter, center, center_rad, crt_app_rad, is_selected);
+
+                            // Draw AppText
+                            self.draw_app_text(
+                                &painter,
+                                &app.name,
+                                center,
+                                crt_app_rad,
+                                is_selected,
+                            );
+
+                            // Draw Apps
+                            self.draw_apps(&painter, center, crt_app_rad, is_selected, app);
+                        });
+                    }
+
+                    // Draw Segment
+                    self.draw_segment(
+                        &painter,
+                        center,
+                        start_rad,
+                        end_rad,
+                        is_selected,
+                        group.bind.clone(),
+                    );
+                });
+            }
+
+            // Draw CenterCircle
+            painter.circle_filled(center, g.center_radius, Self::get_color32(g.center_color));
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                g.middle_text.clone(),
+                FontId::monospace(g.middle_text_size),
+                Self::get_color32(g.middle_text_color),
+            );
+        }
 
         if let Some(index) = group_to_select {
             self.selected_group = Some(index);
