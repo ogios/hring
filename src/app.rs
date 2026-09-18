@@ -55,18 +55,6 @@ impl PendingAssign {
             warning: None,
         }
     }
-
-    /// Replaces the launch key of an app that is already in `group_index`,
-    /// so only the application key has to be captured.
-    pub fn rebind(app: AppLink, group_index: usize) -> Self {
-        Self {
-            app,
-            group_index: Some(group_index),
-            new_group_bind: None,
-            stage: AssignStage::AppKey,
-            warning: None,
-        }
-    }
 }
 
 /// Shortcut deletion waiting for confirmation.

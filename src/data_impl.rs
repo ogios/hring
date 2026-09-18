@@ -5,8 +5,34 @@
 
 use crate::{
     config,
-    data::{BindsConfig, ConfApp, ConfGroup, Easing, GlobalConfig, Graphic},
+    data::{AllPrograms, BindsConfig, ConfApp, ConfGroup, Easing, GlobalConfig, Graphic},
 };
+
+impl Default for AllPrograms {
+    fn default() -> Self {
+        AllPrograms {
+            font_scale: 1.8,
+            font_size_min: 17.0,
+            font_bold_offset: 0.6,
+            icon_radius_scale: 3.0,
+            icon_size_min: 48.0,
+            icon_size_max: 96.0,
+            gap: 16.0,
+            padding_x: 18.0,
+            padding_top: 20.0,
+            padding_bottom: 16.0,
+            icon_text_gap: 14.0,
+            min_cell_width: 200.0,
+            cell_width_extra: 72.0,
+            max_content_width: 1680.0,
+            text_lines: 2.6,
+            text_line_height: 1.25,
+            corner_radius: 10.0,
+            idle_alpha: 45,
+            hover_alpha: 200,
+        }
+    }
+}
 
 impl Default for Graphic {
     fn default() -> Self {
@@ -14,6 +40,7 @@ impl Default for Graphic {
             main_panel_color: (255, 255, 255, 10),
             left_panel_color: (20, 22, 20, 230),
             left_panel_width: 240.0,
+            all_programs: AllPrograms::default(),
             animation_easing: Easing::QuadraticOut,
             menu_items_hover_color: (92, 184, 122, 50),
             menu_items_font_color: (230, 230, 230, 255),

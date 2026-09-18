@@ -71,12 +71,54 @@ impl Easing {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
+#[serde(default)]
+pub struct AllPrograms {
+    /// Name font size is `menu_items_font_size * font_scale`, at least
+    /// `font_size_min`.
+    pub font_scale: f32,
+    pub font_size_min: f32,
+    /// Overdraw offset, in points, used to fake a bold name. `0` disables it.
+    pub font_bold_offset: f32,
+    /// Icon size is `app_radius * icon_radius_scale`, clamped to these bounds.
+    pub icon_radius_scale: f32,
+    pub icon_size_min: f32,
+    pub icon_size_max: f32,
+    /// Gutter between cards.
+    pub gap: f32,
+    /// Padding inside a card.
+    pub padding_x: f32,
+    pub padding_top: f32,
+    pub padding_bottom: f32,
+    /// Space between the icon and the name.
+    pub icon_text_gap: f32,
+    /// A card is at least this wide, and at least
+    /// `icon_size + padding_x * 2 + cell_width_extra`.
+    pub min_cell_width: f32,
+    pub cell_width_extra: f32,
+    /// The grid is centered and never wider than this.
+    pub max_content_width: f32,
+    /// Height reserved for the name, in line heights, and the line-height
+    /// factor used to count how many lines fit.
+    pub text_lines: f32,
+    pub text_line_height: f32,
+    /// Card corner radius and background alpha when idle/hovered.
+    pub corner_radius: f32,
+    pub idle_alpha: u8,
+    pub hover_alpha: u8,
+}
+
 #[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct Graphic {
     // Panels
     pub main_panel_color: (u8, u8, u8, u8),
     pub left_panel_color: (u8, u8, u8, u8),
     pub left_panel_width: f32,
+
+    /// Tuning for the "All Programs" application grid. Missing fields fall back
+    /// to their default, so the table can be edited one value at a time.
+    #[serde(default)]
+    pub all_programs: AllPrograms,
 
     // Animation
     /// Easing curve used for the tab and page transitions. Older configs that
@@ -199,5 +241,27 @@ mod tests {
 
         let parsed: GraphicConfig = toml::from_str(&without).unwrap();
         assert_eq!(parsed.graphic.animation_easing, Easing::QuadraticOut);
+    }
+
+    /// The `[graphic.all_programs]` table is optional, and when present it may
+    /// list only the fields being tuned.
+    #[test]
+    fn all_programs_table_is_optional_and_partial() {
+        let full = toml::to_string(&GraphicConfig::default()).unwrap();
+        assert!(full.contains("[graphic.all_programs]"));
+
+        let without = full
+            .split("[graphic.all_programs]")
+            .next()
+            .unwrap()
+            .to_string();
+
+        let parsed: GraphicConfig = toml::from_str(&without).unwrap();
+        assert_eq!(parsed.graphic.all_programs.font_scale, 1.8);
+
+        let partial = format!("{without}\n[graphic.all_programs]\ngap = 30.0\n");
+        let parsed: GraphicConfig = toml::from_str(&partial).unwrap();
+        assert_eq!(parsed.graphic.all_programs.gap, 30.0);
+        assert_eq!(parsed.graphic.all_programs.padding_x, 18.0);
     }
 }

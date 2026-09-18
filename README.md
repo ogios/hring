@@ -32,6 +32,8 @@ Press `Esc` to cancel any of these prompts. `binds.toml` is updated automaticall
 
 The window has two pages, selected with the tabs at the top: **Keyboard** (the launcher graph) and **All Programs** (the searchable application list). You can also switch with `Ctrl+H` for the keyboard page and `Ctrl+L` for the application list.
 
+The **All Programs** grid can be tuned in the `[graphic.all_programs]` table of `graphic.toml` (card size, padding, gaps, icon and font scale, grid width, ...). Every key is optional, so you can add one at a time and keep adjusting.
+
 If the application doesn't launch after editing the configuration files, the error is most likely due to incorrect formatting. Try deleting them and letting the launcher create new ones.
 
 ### Examples

@@ -266,7 +266,7 @@ impl Hring {
         }
     }
 
-    /// Full-page list of every installed application, with search. Draws into
+    /// Full-page grid of every installed application, with search. Draws into
     /// the given page `ui`, so it can slide together with the tab bar.
     fn draw_all_apps_page(
         &mut self,
@@ -277,10 +277,30 @@ impl Hring {
         let panel_color = Self::get_color32(self.graphic.main_panel_color);
         let font_color = Self::get_color32(self.graphic.menu_items_font_color);
         let hover_color = Self::get_color32(self.graphic.menu_items_hover_color);
-        let font_size = self.graphic.menu_items_font_size;
+        let placeholder_color = Self::get_color32(self.graphic.app_color_unactive);
+        // Snapshot the grid tuning now, so the draw closure only captures these
+        // plain values instead of borrowing `self.graphic`.
+        let ap = self.graphic.all_programs.clone();
+        let font_size = (self.graphic.menu_items_font_size * ap.font_scale).max(ap.font_size_min);
+        let icon_size = (self.graphic.app_radius * ap.icon_radius_scale)
+            .clamp(ap.icon_size_min, ap.icon_size_max);
 
         let mut app_to_execute = None;
         let mut assignment_request: Option<AppLink> = None;
+
+        // Upload the icons once before the grid is drawn, so a cell only looks
+        // up its texture instead of reading from disk every frame.
+        let icon_paths: Vec<String> = self
+            .apps
+            .iter()
+            .filter_map(|app| app.icon.clone())
+            .collect();
+        for icon_path in &icon_paths {
+            self.ensure_icon_texture(ctx, icon_path);
+        }
+
+        let apps = &self.apps;
+        let textures = &self.icon_textures;
 
         let page_rect = ui.max_rect();
         ui.painter().rect_filled(page_rect, 0.0, panel_color);
@@ -304,25 +324,190 @@ impl Hring {
                         ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                let width = ui.available_width();
+                                // Cards are spaced apart generously; the gutter
+                                // is the only separation between them.
+                                let gap = ap.gap;
+                                let padding_x = ap.padding_x;
+                                let padding_top = ap.padding_top;
+                                let padding_bottom = ap.padding_bottom;
+                                let icon_text_gap = ap.icon_text_gap;
+                                ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
 
-                                for app in &self.apps {
-                                    let button_text =
-                                        RichText::new(&app.name).color(font_color).size(font_size);
+                                // Keep the grid away from the window edges and
+                                // cap how wide it grows, then center the block.
+                                let full_width = ui.available_width();
+                                let content_width = full_width.min(ap.max_content_width);
+                                let side_margin =
+                                    ((full_width - content_width) / 2.0 - gap).max(0.0);
 
-                                    let btn = egui::Button::selectable(false, button_text)
-                                        .fill(hover_color);
+                                // Fit as many columns as the capped width allows,
+                                // then stretch them so a full row fills it.
+                                let available = content_width;
+                                let min_cell_width =
+                                    (icon_size + padding_x * 2.0 + ap.cell_width_extra)
+                                        .max(ap.min_cell_width);
+                                let columns = ((available + gap) / (min_cell_width + gap))
+                                    .floor()
+                                    .max(1.0)
+                                    as usize;
+                                let cell_width =
+                                    (available - gap * (columns as f32 - 1.0)) / columns as f32;
+                                let cell_height = padding_top
+                                    + icon_size
+                                    + icon_text_gap
+                                    + font_size * ap.text_lines
+                                    + padding_bottom;
+                                // Lines of name text that fit between the icon
+                                // and the bottom of the card before it would
+                                // spill into the row below.
+                                let text_max_rows = ((cell_height
+                                    - (padding_top + icon_size + icon_text_gap + padding_bottom))
+                                    / (font_size * ap.text_line_height))
+                                    .floor()
+                                    .max(1.0)
+                                    as usize;
 
-                                    let app_response = ui.add_sized([width, 24.0], btn);
+                                if apps.is_empty() {
+                                    ui.label(
+                                        RichText::new("No applications found")
+                                            .color(font_color)
+                                            .size(font_size),
+                                    );
+                                }
 
-                                    // Right-click starts the two-key shortcut capture.
-                                    if app_response.secondary_clicked() && !input_locked {
-                                        assignment_request = Some(app.clone());
-                                    }
+                                for row in apps.chunks(columns) {
+                                    ui.horizontal(|ui| {
+                                        if side_margin > 0.0 {
+                                            ui.add_space(side_margin);
+                                        }
+                                        for app in row {
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                Vec2::new(cell_width, cell_height),
+                                                egui::Sense::click(),
+                                            );
+                                            let response =
+                                                response.on_hover_text(app.name.as_str());
 
-                                    if app_response.clicked() && !input_locked {
-                                        app_to_execute = Some(app.exec.clone());
-                                    };
+                                            let painter = ui.painter();
+                                            let hovered = response.hovered();
+
+                                            painter.rect_filled(
+                                                rect,
+                                                ap.corner_radius,
+                                                Self::with_alpha(
+                                                    hover_color,
+                                                    if hovered {
+                                                        ap.hover_alpha
+                                                    } else {
+                                                        ap.idle_alpha
+                                                    },
+                                                ),
+                                            );
+                                            if hovered {
+                                                ui.ctx().set_cursor_icon(
+                                                    egui::CursorIcon::PointingHand,
+                                                );
+                                            }
+
+                                            let icon_center = egui::pos2(
+                                                rect.center().x,
+                                                rect.top() + padding_top + icon_size / 2.0,
+                                            );
+                                            let icon_rect = egui::Rect::from_center_size(
+                                                icon_center,
+                                                Vec2::splat(icon_size),
+                                            );
+
+                                            let texture = app
+                                                .icon
+                                                .as_deref()
+                                                .and_then(|path| textures.get(path))
+                                                .and_then(|texture| texture.as_ref());
+
+                                            if let Some(texture) = texture {
+                                                painter.image(
+                                                    texture.id(),
+                                                    icon_rect,
+                                                    egui::Rect::from_min_max(
+                                                        egui::pos2(0.0, 0.0),
+                                                        egui::pos2(1.0, 1.0),
+                                                    ),
+                                                    egui::Color32::WHITE,
+                                                );
+                                            } else {
+                                                // No icon resolved: fall back to
+                                                // the app's initial on a chip.
+                                                painter.rect_filled(
+                                                    icon_rect,
+                                                    ap.corner_radius,
+                                                    placeholder_color,
+                                                );
+                                                let initial = app
+                                                    .name
+                                                    .chars()
+                                                    .next()
+                                                    .map(|c| c.to_uppercase().to_string())
+                                                    .unwrap_or_default();
+                                                painter.text(
+                                                    icon_center,
+                                                    Align2::CENTER_CENTER,
+                                                    initial,
+                                                    FontId::proportional(icon_size * 0.55),
+                                                    font_color,
+                                                );
+                                            }
+
+                                            // Clamp the name to the card: wrap it
+                                            // over a few lines and ellipsize the
+                                            // rest, so a long title cannot spill
+                                            // over the icon of the next row.
+                                            let mut job = egui::text::LayoutJob::single_section(
+                                                app.name.clone(),
+                                                egui::text::TextFormat {
+                                                    font_id: FontId::proportional(font_size),
+                                                    color: font_color,
+                                                    ..Default::default()
+                                                },
+                                            );
+                                            job.wrap = egui::text::TextWrapping {
+                                                max_width: cell_width - padding_x * 2.0,
+                                                max_rows: text_max_rows,
+                                                ..Default::default()
+                                            };
+                                            let galley = painter.layout_job(job);
+                                            // epaint ships no bold weight, so the
+                                            // name is thickened by overdrawing it
+                                            // with a tiny offset.
+                                            let text_pos = egui::pos2(
+                                                rect.center().x - galley.size().x / 2.0,
+                                                icon_rect.bottom() + icon_text_gap,
+                                            );
+                                            let text_painter = painter.with_clip_rect(rect);
+                                            text_painter.galley(
+                                                text_pos,
+                                                galley.clone(),
+                                                font_color,
+                                            );
+                                            text_painter.galley(
+                                                text_pos + Vec2::new(ap.font_bold_offset, 0.0),
+                                                galley.clone(),
+                                                font_color,
+                                            );
+                                            text_painter.galley(
+                                                text_pos + Vec2::new(0.0, ap.font_bold_offset),
+                                                galley,
+                                                font_color,
+                                            );
+
+                                            if response.clicked() && !input_locked {
+                                                app_to_execute = Some(app.exec.clone());
+                                            }
+
+                                            if response.secondary_clicked() && !input_locked {
+                                                assignment_request = Some(app.clone());
+                                            }
+                                        }
+                                    });
                                 }
                             });
 
@@ -405,21 +590,22 @@ impl Hring {
                 }
             }
             AssignStage::AppKey => {
-                // A group bind must stay unique, otherwise pressing it would
-                // both switch groups and launch an app.
-                if let Some(group_bind) = self
-                    .binds
-                    .iter()
-                    .find(|group| group.bind.eq_ignore_ascii_case(&bind))
-                    .map(|group| group.bind.clone())
+                // Another group's key must stay unique: pressing it would switch
+                // to that group instead of launching the app. The app's own
+                // group is exempt, so a group can reuse its key as an app key.
+                if let Some(group_bind) =
+                    Self::group_using_bind_excluding(&self.binds, &bind, group_index)
                 {
                     self.warn_assign(format!(
                         "Key [{bind}] is already the group key [{group_bind}]"
                     ));
-                } else if let Some(owner) =
-                    Self::app_using_bind(&self.binds, &bind, Some(&app.name))
+                } else if let Some(owner) = group_index
+                    .and_then(|index| self.binds.get(index))
+                    .and_then(|group| Self::app_using_bind_in_group(group, &bind, Some(&app.name)))
                 {
-                    self.warn_assign(format!("Key [{bind}] already launches \"{owner}\""));
+                    self.warn_assign(format!(
+                        "Key [{bind}] already launches \"{owner}\" in this group"
+                    ));
                 } else {
                     let index = match group_index {
                         Some(index) => index,
@@ -436,12 +622,17 @@ impl Hring {
                         }
                     };
 
+                    // The app lives in exactly one group: drop any previous
+                    // entry, so a rebind that switches groups moves it instead
+                    // of duplicating it.
+                    for group in self.binds.iter_mut() {
+                        group.apps.retain(|a| a.name != app.name);
+                    }
+
                     if let Some(group) = self.binds.get_mut(index) {
-                        // Drop a previous entry for this app and any app that
-                        // already uses the freshly captured key.
-                        group
-                            .apps
-                            .retain(|a| a.name != app.name && !a.bind.eq_ignore_ascii_case(&bind));
+                        // Any app that already uses the freshly captured key is
+                        // replaced.
+                        group.apps.retain(|a| !a.bind.eq_ignore_ascii_case(&bind));
                         group.apps.push(App {
                             bind,
                             name: app.name,
@@ -457,7 +648,48 @@ impl Hring {
         }
     }
 
+    /// Returns the bind of the first group that uses `bind`, ignoring the group
+    /// at `exclude_index`.
+    ///
+    /// Used while capturing an app key: an app may reuse its own group's key
+    /// (the group is already selected then, so a second press launches), but not
+    /// the key of a different group, which would be shadowed by group selection.
+    fn group_using_bind_excluding(
+        binds: &[Group],
+        bind: &str,
+        exclude_index: Option<usize>,
+    ) -> Option<String> {
+        binds
+            .iter()
+            .enumerate()
+            .find(|(index, group)| {
+                Some(*index) != exclude_index && group.bind.eq_ignore_ascii_case(bind)
+            })
+            .map(|(_, group)| group.bind.clone())
+    }
+
+    /// Returns the name of the first app inside `group` that uses `bind`.
+    ///
+    /// App keys only have to be unique within their own group: the same letter
+    /// may launch different apps in different groups.
+    fn app_using_bind_in_group(
+        group: &Group,
+        bind: &str,
+        exclude_name: Option<&str>,
+    ) -> Option<String> {
+        group
+            .apps
+            .iter()
+            .find(|app| {
+                exclude_name != Some(app.name.as_str()) && app.bind.eq_ignore_ascii_case(bind)
+            })
+            .map(|app| app.name.clone())
+    }
+
     /// Returns the name of the first app in any group that uses `bind`.
+    ///
+    /// Group keys are global, so creating a group whose key is already used as
+    /// an app key would shadow that launch. That check spans every group.
     fn app_using_bind(binds: &[Group], bind: &str, exclude_name: Option<&str>) -> Option<String> {
         binds
             .iter()
@@ -896,7 +1128,7 @@ impl Hring {
                 icon: app.icon.clone(),
             };
 
-            self.pending_assign = Some(PendingAssign::rebind(link, group_index));
+            self.pending_assign = Some(PendingAssign::new(link));
         }
 
         if let Some((group_index, app_index)) = delete_request {
@@ -911,5 +1143,80 @@ impl Hring {
         } else if hovering_app {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(bind: &str, name: &str) -> App {
+        App {
+            bind: bind.to_string(),
+            name: name.to_string(),
+            exec: String::new(),
+            icon: None,
+        }
+    }
+
+    /// The same app key may launch different apps in different groups. Only the
+    /// group-scoped lookup is used while capturing an app key.
+    #[test]
+    fn same_app_key_allowed_in_different_groups() {
+        let existing = Group {
+            bind: "q".to_string(),
+            apps: vec![app("w", "firefox")],
+        };
+        let target = Group {
+            bind: "a".to_string(),
+            apps: Vec::new(),
+        };
+
+        // The global lookup (used for group keys) still sees the other group.
+        assert_eq!(
+            Hring::app_using_bind(std::slice::from_ref(&existing), "w", None).as_deref(),
+            Some("firefox")
+        );
+
+        // Reusing `w` in a fresh group must not be reported as a conflict.
+        assert_eq!(Hring::app_using_bind_in_group(&target, "w", None), None);
+    }
+
+    /// Within one group the app keys stay unique.
+    #[test]
+    fn duplicate_app_key_rejected_within_group() {
+        let group = Group {
+            bind: "a".to_string(),
+            apps: vec![app("w", "firefox")],
+        };
+
+        assert_eq!(
+            Hring::app_using_bind_in_group(&group, "w", None).as_deref(),
+            Some("firefox")
+        );
+        // The app being rebound is not its own conflict.
+        assert_eq!(
+            Hring::app_using_bind_in_group(&group, "w", Some("firefox")),
+            None
+        );
+    }
+
+    /// Rebinding an app inside group `[a]` to key `a` is allowed, but another
+    /// group owning `a` still conflicts.
+    #[test]
+    fn app_key_may_reuse_own_group_key() {
+        let group = Group {
+            bind: "a".to_string(),
+            apps: Vec::new(),
+        };
+
+        assert_eq!(
+            Hring::group_using_bind_excluding(std::slice::from_ref(&group), "a", Some(0)),
+            None
+        );
+        assert_eq!(
+            Hring::group_using_bind_excluding(std::slice::from_ref(&group), "a", None).as_deref(),
+            Some("a")
+        );
     }
 }
