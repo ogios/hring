@@ -52,6 +52,24 @@ impl PendingAssign {
             stage: AssignStage::GroupKey,
         }
     }
+
+    /// Replaces the launch key of an app that is already in `group_index`,
+    /// so only the application key has to be captured.
+    pub fn rebind(app: AppLink, group_index: usize) -> Self {
+        Self {
+            app,
+            group_index: Some(group_index),
+            new_group_bind: None,
+            stage: AssignStage::AppKey,
+        }
+    }
+}
+
+/// Shortcut deletion waiting for confirmation.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingDelete {
+    pub group_index: usize,
+    pub app_index: usize,
 }
 
 pub struct Hring {
@@ -66,6 +84,7 @@ pub struct Hring {
     pub search_text: String,
     pub selected_group: Option<usize>,
     pub pending_assign: Option<PendingAssign>,
+    pub pending_delete: Option<PendingDelete>,
 }
 
 impl std::fmt::Debug for Hring {
@@ -192,6 +211,7 @@ impl Default for Hring {
             search_text: String::new(),
             selected_group: None,
             pending_assign: None,
+            pending_delete: None,
         }
     }
 }

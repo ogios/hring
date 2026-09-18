@@ -10,7 +10,7 @@ use eframe::egui::{
 };
 
 use crate::{
-    app::{AssignStage, Hring, PendingAssign},
+    app::{AssignStage, Hring, PendingAssign, PendingDelete},
     config,
     data::{App, AppLink, ConfApp, ConfGroup, Group},
 };
@@ -28,30 +28,44 @@ impl eframe::App for Hring {
             self.apps = apps;
         }
 
+        // A modal prompt swallows the key press and pointer click of this frame,
+        // so it must not also launch an app or trigger a normal hotkey.
+        let modal_active = self.pending_assign.is_some() || self.pending_delete.is_some();
+
         if self.pending_assign.is_some() {
             // While a shortcut is being assigned the next key press is the bind,
             // so it must not close the window or trigger a normal hotkey.
             self.handle_pending_assign(ctx);
+        } else if self.pending_delete.is_some() {
+            // While deleting, Enter confirms and Escape cancels.
+            self.handle_pending_delete(ctx);
         } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
 
-        let text_edit = self.create_left_panel(ctx);
+        let text_edit = self.create_left_panel(ctx, modal_active);
 
-        if self.pending_assign.is_none() {
+        if !modal_active {
             self.response_processing(&text_edit, ctx);
         }
 
-        self.create_main_panel(ctx);
+        self.create_main_panel(ctx, modal_active);
+
+        if let Some(confirmed) = self.show_delete_confirm(ctx) {
+            if confirmed {
+                self.delete_pending();
+            } else {
+                self.pending_delete = None;
+            }
+        }
 
         self.show_assign_overlay(ctx);
     }
 }
 
 impl Hring {
-    fn create_left_panel(&mut self, ctx: &eframe::egui::Context) -> Response {
+    fn create_left_panel(&mut self, ctx: &eframe::egui::Context, input_locked: bool) -> Response {
         let g = &self.graphic;
-        let assigning = self.pending_assign.is_some();
 
         let mut app_to_execute = None;
         let mut assignment_request: Option<AppLink> = None;
@@ -87,11 +101,11 @@ impl Hring {
                                 let app_response = ui.add_sized([ui.available_width(), 20.0], btn);
 
                                 // Right-click starts the two-key shortcut capture.
-                                if app_response.secondary_clicked() && !assigning {
+                                if app_response.secondary_clicked() && !input_locked {
                                     assignment_request = Some(app.clone());
                                 }
 
-                                if app_response.clicked() && !assigning {
+                                if app_response.clicked() && !input_locked {
                                     app_to_execute = Some(app.exec.clone());
                                 };
                             }
@@ -195,9 +209,104 @@ impl Hring {
         }
     }
 
+    /// `Enter` confirms the pending deletion, `Escape` cancels it.
+    fn handle_pending_delete(&mut self, ctx: &eframe::egui::Context) {
+        if self.pending_delete.is_none() {
+            return;
+        }
+
+        let (enter_pressed, escape_pressed) =
+            ctx.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+
+        if escape_pressed {
+            self.pending_delete = None;
+        } else if enter_pressed {
+            self.delete_pending();
+        }
+    }
+
+    /// Removes the app entry that is currently pending deletion and persists.
+    fn delete_pending(&mut self) {
+        let Some(pending) = self.pending_delete.take() else {
+            return;
+        };
+
+        if let Some(group) = self.binds.get_mut(pending.group_index)
+            && pending.app_index < group.apps.len()
+        {
+            group.apps.remove(pending.app_index);
+        }
+
+        self.persist_binds();
+    }
+
+    /// Draws the deletion confirmation box. Returns `Some(true)` when the user
+    /// confirmed, `Some(false)` when cancelled and `None` while waiting.
+    fn show_delete_confirm(&self, ctx: &eframe::egui::Context) -> Option<bool> {
+        let Some(pending) = &self.pending_delete else {
+            return None;
+        };
+
+        let app_name = self
+            .binds
+            .get(pending.group_index)
+            .and_then(|group| group.apps.get(pending.app_index))
+            .map(|app| app.name.clone())
+            .unwrap_or_default();
+
+        let group_bind = self
+            .binds
+            .get(pending.group_index)
+            .map(|group| group.bind.clone())
+            .unwrap_or_default();
+
+        let mut result = None;
+
+        egui::Window::new("Delete shortcut")
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(format!("Delete \"{app_name}\" from group [{group_bind}]?"))
+                            .size(15.0),
+                    );
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete").clicked() {
+                            result = Some(true);
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            result = Some(false);
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Enter — delete, Esc — cancel").weak());
+                });
+            });
+
+        result
+    }
+
     /// Converts the in-memory groups back into the configuration layout and
     /// writes both `binds.toml` and its cache.
-    fn persist_binds(&self) {
+    ///
+    /// Groups that no longer hold any application are dropped, since groups are
+    /// only useful while they launch something.
+    fn persist_binds(&mut self) {
+        let before = self.binds.len();
+        self.binds.retain(|group| !group.apps.is_empty());
+
+        // Removing a group can invalidate the current selection.
+        if self.binds.len() != before {
+            self.selected_group = None;
+        }
+
         let conf_groups: Vec<ConfGroup> = self
             .binds
             .iter()
@@ -242,7 +351,7 @@ impl Hring {
                     ),
                 };
 
-                ("2. Press the APP key", group)
+                ("Press the APP key", group)
             }
         };
 
@@ -305,7 +414,7 @@ impl Hring {
         }
     }
 
-    fn create_main_panel(&mut self, ctx: &eframe::egui::Context) {
+    fn create_main_panel(&mut self, ctx: &eframe::egui::Context, input_locked: bool) {
         let icon_paths: Vec<String> = self
             .binds
             .iter()
@@ -322,22 +431,31 @@ impl Hring {
         // Pointer input is sampled once per frame and hit-tested manually against
         // the painted shapes, since the graph is drawn with a raw `Painter`
         // instead of interactive egui widgets.
-        let pointer = if self.pending_assign.is_some() {
-            // Ignore graph clicks while a shortcut is being assigned.
-            (None, None)
+        let (click_pos, rebind_pos, delete_pos, hover_pos) = if input_locked {
+            // Ignore graph input while a shortcut is being assigned or deleted.
+            (None, None, None, None)
         } else {
             ctx.input(|i| {
-                let clicked = i
-                    .pointer
-                    .primary_clicked()
-                    .then(|| i.pointer.interact_pos());
-                (clicked.flatten(), i.pointer.hover_pos())
+                let clicked = |button| {
+                    i.pointer
+                        .button_clicked(button)
+                        .then(|| i.pointer.interact_pos())
+                        .flatten()
+                };
+
+                (
+                    clicked(egui::PointerButton::Primary),
+                    clicked(egui::PointerButton::Secondary),
+                    clicked(egui::PointerButton::Middle),
+                    i.pointer.hover_pos(),
+                )
             })
         };
-        let (click_pos, hover_pos) = pointer;
 
         let mut app_to_execute: Option<String> = None;
         let mut group_to_select: Option<usize> = None;
+        let mut rebind_request: Option<(usize, usize)> = None;
+        let mut delete_request: Option<(usize, usize)> = None;
         let mut hovering_app = false;
 
         egui::CentralPanel::default()
@@ -406,6 +524,20 @@ impl Hring {
                                     app_to_execute = Some(app.exec.clone());
                                 }
 
+                                // Right-click rewrites the launch key.
+                                if let Some(pos) = rebind_pos
+                                    && pos.distance(app_pos) <= g.app_radius
+                                {
+                                    rebind_request = Some((index, i));
+                                }
+
+                                // Middle-click asks to delete the shortcut.
+                                if let Some(pos) = delete_pos
+                                    && pos.distance(app_pos) <= g.app_radius
+                                {
+                                    delete_request = Some((index, i));
+                                }
+
                                 if let Some(pos) = hover_pos
                                     && pos.distance(app_pos) <= g.app_radius
                                 {
@@ -460,6 +592,28 @@ impl Hring {
 
         if let Some(index) = group_to_select {
             self.selected_group = Some(index);
+        }
+
+        if let Some((group_index, app_index)) = rebind_request
+            && let Some(app) = self
+                .binds
+                .get(group_index)
+                .and_then(|group| group.apps.get(app_index))
+        {
+            let link = AppLink {
+                name: app.name.clone(),
+                exec: app.exec.clone(),
+                icon: app.icon.clone(),
+            };
+
+            self.pending_assign = Some(PendingAssign::rebind(link, group_index));
+        }
+
+        if let Some((group_index, app_index)) = delete_request {
+            self.pending_delete = Some(PendingDelete {
+                group_index,
+                app_index,
+            });
         }
 
         if let Some(exec) = app_to_execute {
