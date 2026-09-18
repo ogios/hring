@@ -227,6 +227,21 @@ Measured on the same machine/output as 6b:
 Both were verified visually with `grim`; transparency and layout match.
 GPU buys lower per-frame time at the cost of ~0.7 s startup.
 
+### 6d. Cutting the GPU startup cost
+
+`RenderState::create` calls `instance.enumerate_adapters(backends)` before
+requesting one, so probing `Backends::all()` also enumerates GL/EGL — the slow
+part on Wayland. `src/backend/gpu.rs` now:
+
+- creates the `wgpu::Instance` and the `WgpuConfiguration` with the **same**
+  backend set, defaulting to `Backends::VULKAN`;
+- falls back to `Backends::all()` when no adapter can be created from Vulkan
+  (GL-only systems keep working);
+- allows `HRING_GPU_BACKEND=vulkan|gl|all` to override.
+
+`HRING_TRACE=1` now prints `instance=/surface=/device+renderer=` phase timings
+and the selected adapter name for the GPU backend.
+
 ---
 
 ## 7. Open questions / risks

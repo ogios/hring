@@ -68,6 +68,12 @@ cargo build --release
 cargo build --release --no-default-features --features gpu
 ```
 
+The GPU build only probes the **Vulkan** backend by default, which skips the
+slow GL/EGL enumeration and cuts most of the startup cost. Set
+`HRING_GPU_BACKEND=all` (or `gl`) to fall back to other backends; if Vulkan
+yields no adapter the `all` backends are tried automatically. Run with
+`HRING_TRACE=1` to print the per-phase wgpu init timings and the chosen adapter.
+
 ### Build an Arch package
 
 `PKGBUILD` contains a `pkgver()` function that derives the version from git

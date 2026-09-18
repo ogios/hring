@@ -1,8 +1,11 @@
 /target
 
 # makepkg artifacts
+# Do NOT ignore `/src/`: that is the Rust source tree. PKGBUILD builds in-tree
+# (`source=()` + `cd "$startdir"`), so makepkg's `$srcdir` is the same path and
+# must never shadow the real sources. Run makepkg with `BUILDDIR` elsewhere if
+# you want a separate srcdir.
 /pkg/
-/src/
 *.pkg.tar.zst
 *.pkg.tar.zst.sig
 
