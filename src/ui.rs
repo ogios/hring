@@ -350,19 +350,80 @@ impl Hring {
                 egui::UiBuilder::new().max_rect(page_rect.shrink(24.0)),
                 |ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("All Programs").color(font_color).size(18.0));
-                        ui.add_space(8.0);
-
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut self.search_text)
-                                .hint_text("Search applications..."),
+                        ui.label(
+                            RichText::new("All Programs")
+                                .font(egui::FontId::monospace(20.0))
+                                .color(Self::with_alpha(font_color, 210))
+                                .strong(),
                         );
+                        ui.add_space(10.0);
+
+                        // NeoVim-style command bar: monospace prompt, large
+                        // type, and an accent border that lights up while search
+                        // mode is active.
+                        let search_font = egui::FontId::monospace(ap.search_font_size);
+                        let prompt_color = if search_active {
+                            selection_color
+                        } else {
+                            Self::with_alpha(font_color, 140)
+                        };
+                        let bar_stroke = if search_active {
+                            Stroke::new(2.0, selection_color)
+                        } else {
+                            Stroke::new(1.0, Self::with_alpha(font_color, 45))
+                        };
+                        let bar_fill = Self::with_alpha(
+                            hover_color,
+                            if search_active {
+                                ap.search_active_alpha
+                            } else {
+                                ap.search_idle_alpha
+                            },
+                        );
+
+                        let search_bar = egui::Frame::NONE
+                            .fill(bar_fill)
+                            .stroke(bar_stroke)
+                            .corner_radius(ap.search_corner_radius)
+                            .inner_margin(egui::Margin::symmetric(
+                                ap.search_padding_x.clamp(0.0, 127.0) as i8,
+                                0,
+                            ))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.x = 12.0;
+
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(ap.search_prompt.as_str())
+                                            .font(search_font.clone())
+                                            .color(prompt_color)
+                                            .strong(),
+                                    );
+
+                                    ui.add_sized(
+                                        [ui.available_width(), ap.search_bar_height],
+                                        egui::TextEdit::singleline(&mut self.search_text)
+                                            .font(search_font.clone())
+                                            .text_color(font_color)
+                                            .hint_text(
+                                                RichText::new("Search applications...")
+                                                    .color(Self::with_alpha(font_color, 90)),
+                                            )
+                                            .hint_text_font(search_font.clone())
+                                            .frame(false)
+                                            .margin(egui::Margin::ZERO)
+                                            .vertical_align(egui::Align::Center),
+                                    )
+                                })
+                                .inner
+                            });
 
                         // Search mode (`/`) keeps the filter field focused; it
                         // is re-requested every frame, so a lost focus can never
                         // leave the page unable to filter again. Leaving search
                         // mode (`Escape`) hands the keyboard back to navigation.
+                        let text_edit = search_bar.inner;
                         if search_active {
                             if !text_edit.has_focus() {
                                 text_edit.request_focus();

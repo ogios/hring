@@ -31,6 +31,13 @@ impl Default for AllPrograms {
             corner_radius: 10.0,
             idle_alpha: 45,
             hover_alpha: 200,
+            search_prompt: String::from("/"),
+            search_font_size: 26.0,
+            search_bar_height: 56.0,
+            search_padding_x: 20.0,
+            search_corner_radius: 12.0,
+            search_idle_alpha: 35,
+            search_active_alpha: 80,
         }
     }
 }

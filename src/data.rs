@@ -109,6 +109,19 @@ pub struct AllPrograms {
     pub corner_radius: f32,
     pub idle_alpha: u8,
     pub hover_alpha: u8,
+
+    /// Prompt drawn at the start of the filter bar, NeoVim-style.
+    pub search_prompt: String,
+    /// Font size of the filter text. Monospace, so it stays readable large.
+    pub search_font_size: f32,
+    /// Total height of the filter bar.
+    pub search_bar_height: f32,
+    /// Horizontal padding inside the filter bar.
+    pub search_padding_x: f32,
+    pub search_corner_radius: f32,
+    /// Background alpha of the filter bar when search mode is idle/active.
+    pub search_idle_alpha: u8,
+    pub search_active_alpha: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize, Encode, Decode)]
