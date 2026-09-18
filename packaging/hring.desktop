@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hring
+GenericName=Application Launcher
+Comment=Lightweight keyboard-driven application launcher with a graph-like interface
+Exec=hring
+Icon=hring
+Terminal=false
+Categories=Utility;
+Keywords=launcher;launch;run;apps;
+StartupNotify=false

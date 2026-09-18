@@ -1,5 +1,11 @@
 /target
 
+# makepkg artifacts
+/pkg/
+/src/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+
 **/*.rs.bk
 .DS_Store
 .env
