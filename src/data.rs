@@ -52,7 +52,7 @@ fn default_easing() -> Easing {
 impl Easing {
     /// Maps the configured curve to the matching `egui` easing function.
     pub fn function(self) -> fn(f32) -> f32 {
-        use eframe::egui::emath::easing;
+        use egui::emath::easing;
 
         match self {
             Easing::Linear => easing::linear,

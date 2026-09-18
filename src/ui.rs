@@ -5,7 +5,7 @@
 
 use core::f32;
 
-use eframe::egui::{
+use egui::{
     self, Align2, FontId, Frame, Key, Response, RichText, ScrollArea, Vec2, ViewportCommand,
 };
 
@@ -15,8 +15,9 @@ use crate::{
     data::{App, AppLink, ConfApp, ConfGroup, Group},
 };
 
-impl eframe::App for Hring {
-    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+impl Hring {
+    /// Per-frame UI pass. Called by the backend once per `egui::Context::run`.
+    pub(crate) fn update_ui(&mut self, ctx: &egui::Context) {
         if !self.was_updated_from_config_loader
             && let Ok(groups) = self.from_config_loader.try_recv()
         {
@@ -79,7 +80,7 @@ impl eframe::App for Hring {
 impl Hring {
     /// Top bar holding the page tabs. Returns the view selected this frame, if
     /// the user clicked a tab.
-    fn create_tab_bar(&self, ctx: &eframe::egui::Context) -> Option<View> {
+    fn create_tab_bar(&self, ctx: &egui::Context) -> Option<View> {
         let active_color = Self::get_color32(self.graphic.app_color_active);
         let active_text_color = Self::get_color32(self.graphic.app_font_color_active);
         let inactive_text_color = Self::get_color32(self.graphic.menu_items_font_color);
@@ -202,7 +203,7 @@ impl Hring {
 
     /// Draws the active page and slides the two pages horizontally past each
     /// other while the view changes.
-    fn draw_pages(&mut self, ctx: &eframe::egui::Context, modal_active: bool) {
+    fn draw_pages(&mut self, ctx: &egui::Context, modal_active: bool) {
         let target = match self.view {
             View::Keyboard => 0.0,
             View::AllApps => 1.0,
@@ -273,7 +274,7 @@ impl Hring {
     fn draw_all_apps_page(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &eframe::egui::Context,
+        ctx: &egui::Context,
         input_locked: bool,
     ) -> Response {
         let font_color = Self::get_color32(self.graphic.menu_items_font_color);
@@ -531,7 +532,7 @@ impl Hring {
     /// Captures the next pressed key: the first one selects an existing group
     /// (or creates a new one), the second becomes the app's launch key.
     /// `Escape` cancels at any point.
-    fn handle_pending_assign(&mut self, ctx: &eframe::egui::Context) {
+    fn handle_pending_assign(&mut self, ctx: &egui::Context) {
         let pressed_key = ctx.input(|i| {
             i.events.iter().find_map(|event| match event {
                 egui::Event::Key {
@@ -706,7 +707,7 @@ impl Hring {
     }
 
     /// `Enter` confirms the pending deletion, `Escape` cancels it.
-    fn handle_pending_delete(&mut self, ctx: &eframe::egui::Context) {
+    fn handle_pending_delete(&mut self, ctx: &egui::Context) {
         if self.pending_delete.is_none() {
             return;
         }
@@ -738,7 +739,7 @@ impl Hring {
 
     /// Draws the deletion confirmation box. Returns `Some(true)` when the user
     /// confirmed, `Some(false)` when cancelled and `None` while waiting.
-    fn show_delete_confirm(&self, ctx: &eframe::egui::Context) -> Option<bool> {
+    fn show_delete_confirm(&self, ctx: &egui::Context) -> Option<bool> {
         let Some(pending) = &self.pending_delete else {
             return None;
         };
@@ -824,7 +825,7 @@ impl Hring {
     }
 
     /// Small centered box shown while waiting for the two shortcut keys.
-    fn show_assign_overlay(&self, ctx: &eframe::egui::Context) {
+    fn show_assign_overlay(&self, ctx: &egui::Context) {
         let Some(pending) = &self.pending_assign else {
             return;
         };
@@ -875,7 +876,7 @@ impl Hring {
     }
 
     /// Handles typing in the search box of the "All Programs" page.
-    fn handle_search(&mut self, text_edit: &Response, ctx: &eframe::egui::Context) {
+    fn handle_search(&mut self, text_edit: &Response, ctx: &egui::Context) {
         let enter_pressed = ctx.input(|i| i.key_pressed(Key::Enter));
 
         if text_edit.changed() {
@@ -898,7 +899,7 @@ impl Hring {
     }
 
     /// Handles the group and application hotkeys of the keyboard launcher.
-    fn handle_hotkeys(&mut self, ctx: &eframe::egui::Context) {
+    fn handle_hotkeys(&mut self, ctx: &egui::Context) {
         // Binds are stored as bare keys, so a modified press (`Ctrl+H`, ...) is
         // a page shortcut, not an application hotkey.
         let modifiers = ctx.input(|i| i.modifiers);
@@ -936,12 +937,7 @@ impl Hring {
 
     /// Radial group/app graph for the keyboard launcher, drawn into the given
     /// page `ui` so it can slide together with the tab bar.
-    fn draw_keyboard_page(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &eframe::egui::Context,
-        input_locked: bool,
-    ) {
+    fn draw_keyboard_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, input_locked: bool) {
         let icon_paths: Vec<String> = self
             .binds
             .iter()

@@ -47,7 +47,8 @@ Various graphics configuration templates [are available here.](examples/)
 ### Prerequisites:
 
 - `Rust` (latest stable)
-- `Linux` with `X11` or `Wayland`
+- `Linux` with `Wayland` and a compositor that supports `wlr-layer-shell` (niri, sway, Hyprland, ...)
+- A working Vulkan driver (the `wgpu` renderer probes Vulkan by default)
 
 ### Build from source
 ``` Bash
@@ -56,6 +57,14 @@ cd hring
 cargo build --release
 # The binary will be available at target/release/hring
 ```
+
+The window is a `wlr-layer-shell` overlay and presentation goes through
+`wgpu` + `egui-wgpu` on the surface's swapchain. To keep startup fast the GPU
+build only probes the **Vulkan** backend by default, which skips the slow
+GL/EGL enumeration. Set `HRING_GPU_BACKEND=all` (or `gl`) to use other
+backends; if Vulkan yields no adapter the `all` backends are tried
+automatically. Run with `HRING_TRACE=1` to print the per-phase wgpu init
+timings and the chosen adapter.
 
 ### Build an Arch package
 
@@ -94,7 +103,9 @@ I'm always happy if you decide to help develop the Hring. See the [Contributing]
 
 ## Build With
 - `Rust`
-- `eframe`
+- `egui`
+- `smithay-client-toolkit`
+- `wgpu` + `egui-wgpu`
 - `serde`
 - `toml`
 - `bincode`
