@@ -4,6 +4,12 @@ version = "0.2.0"
 authors = ["Xhelgi <helgi@proton.me>"]
 edition = "2024"
 
+[features]
+default = []
+# Use a `wlr-layer-shell` overlay instead of the default fullscreen xdg-shell
+# toplevel. Requires a compositor that implements `wlr-layer-shell`.
+layer-shell = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.9.8"

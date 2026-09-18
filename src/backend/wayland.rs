@@ -3,8 +3,10 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, version 3.
 
-//! Native Wayland runner: `smithay-client-toolkit` layer-shell overlay.
-//! Presentation is GPU-only: `wgpu` + `egui-wgpu` (see [`crate::backend::gpu`]).
+//! Native Wayland runner. The default build is an xdg-shell toplevel that opens
+//! fullscreen; the `layer-shell` feature switches it to a `wlr-layer-shell`
+//! overlay. Presentation is GPU-only: `wgpu` + `egui-wgpu` (see
+//! [`crate::backend::gpu`]).
 //!
 //! Drives `egui::Context::run` once per frame, translates Wayland input into
 //! egui events, and throttles redraws to the compositor via `wl_surface.frame`.
@@ -14,8 +16,8 @@ use crate::backend::Presenter;
 use calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat,
+    delegate_compositor, delegate_keyboard, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -26,14 +28,25 @@ use smithay_client_toolkit::{
             BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler,
         },
     },
-    shell::{
-        WaylandSurface,
-        wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceConfigure,
-        },
+    shell::WaylandSurface,
+};
+#[cfg(feature = "layer-shell")]
+use smithay_client_toolkit::{
+    delegate_layer,
+    shell::wlr_layer::{
+        Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+        LayerSurfaceConfigure,
     },
 };
+#[cfg(not(feature = "layer-shell"))]
+use smithay_client_toolkit::{
+    delegate_xdg_shell, delegate_xdg_window,
+    shell::xdg::{
+        XdgShell,
+        window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
+    },
+};
+#[cfg(feature = "layer-shell")]
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -42,6 +55,13 @@ use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
 };
+
+/// The shell role of the launcher surface, selected at compile time.
+#[cfg(not(feature = "layer-shell"))]
+type ShellSurface = Window;
+/// The shell role of the launcher surface, selected at compile time.
+#[cfg(feature = "layer-shell")]
+type ShellSurface = LayerSurface;
 
 // Re-exported to guarantee the same `wayland-client`/`wayland-protocols`
 // versions SCTK was built against.
@@ -67,7 +87,6 @@ pub fn run(ctx: egui::Context, app: Hring) -> Result<(), Box<dyn std::error::Err
     let qh = event_queue.handle();
 
     let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor missing");
-    let layer_shell = LayerShell::bind(&globals, &qh).expect("wlr-layer-shell missing");
 
     // Fractional scaling (`wp_fractional_scale_v1`) lets us render at the exact
     // output scale (e.g. 1.5x) instead of rounding up to an integer factor,
@@ -79,37 +98,64 @@ pub fn run(ctx: egui::Context, app: Hring) -> Result<(), Box<dyn std::error::Err
         .ok();
     let viewporter = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok();
 
+    // The shell role is chosen at compile time. The shell global is kept for the
+    // whole run so its proxy is not destroyed while the surface is alive.
+    #[cfg(not(feature = "layer-shell"))]
+    let xdg_shell = XdgShell::bind(&globals, &qh).expect("xdg_wm_base missing");
+    #[cfg(feature = "layer-shell")]
+    let layer_shell = LayerShell::bind(&globals, &qh).expect("wlr-layer-shell missing");
+
     let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(APP_ID), None);
-    // Anchored to every edge with size 0: the compositor configures us to the
-    // full output. Exclusive zone -1 keeps the layer from reserving space.
-    layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-    layer.set_exclusive_zone(-1);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-    layer.set_size(0, 0);
+
+    #[cfg(not(feature = "layer-shell"))]
+    let shell = {
+        // xdg-shell is the standard toplevel protocol: every compositor
+        // implements it, so the window gets normal focus/taskbar/animation
+        // handling. No decorations: fullscreen, undecorated.
+        let window = xdg_shell.create_window(surface, WindowDecorations::None, &qh);
+        window.set_title("Hring");
+        window.set_app_id(APP_ID);
+        // Ask the compositor to map us fullscreen; the configure event carries
+        // the output-sized `new_size` we render at.
+        window.set_fullscreen(None);
+        window
+    };
+    #[cfg(feature = "layer-shell")]
+    let shell = {
+        let layer =
+            layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(APP_ID), None);
+        // Anchored to every edge with size 0: the compositor configures us to
+        // the full output. Exclusive zone -1 keeps the layer from reserving
+        // space.
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_exclusive_zone(-1);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        layer.set_size(0, 0);
+        layer
+    };
 
     let use_fractional = fractional_scale_manager.is_some() && viewporter.is_some();
 
     let fractional_scale = if use_fractional {
         fractional_scale_manager
             .as_ref()
-            .map(|manager| manager.get_fractional_scale(layer.wl_surface(), &qh, ()))
+            .map(|manager| manager.get_fractional_scale(shell.wl_surface(), &qh, ()))
     } else {
         None
     };
     let viewport = if use_fractional {
         viewporter
             .as_ref()
-            .map(|viewporter| viewporter.get_viewport(layer.wl_surface(), &qh, ()))
+            .map(|viewporter| viewporter.get_viewport(shell.wl_surface(), &qh, ()))
     } else {
         None
     };
 
     // Initial commit carries no buffer; wait for the compositor's configure.
-    layer.commit();
+    shell.commit();
 
     let presenter =
-        Presenter::new(&conn, layer.wl_surface()).expect("failed to create GPU presenter");
+        Presenter::new(&conn, shell.wl_surface()).expect("failed to create GPU presenter");
 
     let repaint_deadline: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
@@ -127,7 +173,7 @@ pub fn run(ctx: egui::Context, app: Hring) -> Result<(), Box<dyn std::error::Err
         fractional: use_fractional,
         viewport,
         _fractional_scale: fractional_scale,
-        layer,
+        shell,
         qh: qh.clone(),
         frame_pending: false,
         keyboard: None,
@@ -223,7 +269,7 @@ struct Backend {
     /// Kept alive for the lifetime of the surface; dropping it destroys the
     /// object.
     _fractional_scale: Option<WpFractionalScaleV1>,
-    layer: LayerSurface,
+    shell: ShellSurface,
     qh: QueueHandle<Backend>,
     /// A `wl_surface.frame` callback is outstanding; do not draw until it fires.
     frame_pending: bool,
@@ -295,7 +341,7 @@ impl Backend {
 
         let t_tess = t_frame.elapsed();
 
-        let surface = self.layer.wl_surface().clone();
+        let surface = self.shell.wl_surface().clone();
         self.sync_surface_scale(&surface, width, height, ppp);
         self.presenter.present(
             &primitives,
@@ -350,7 +396,7 @@ impl Backend {
             self.frame_pending = true;
         }
 
-        self.layer.commit();
+        self.shell.commit();
     }
 
     /// Points the compositor at the physical buffer: a viewport destination in
@@ -487,6 +533,41 @@ impl OutputHandler for Backend {
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
 
+/// Default build: a fullscreen xdg-shell toplevel. A close request or the
+/// compositor changing our size/state arrives here.
+#[cfg(not(feature = "layer-shell"))]
+impl WindowHandler for Backend {
+    fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &Window) {
+        self.exit = true;
+    }
+
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _window: &Window,
+        configure: WindowConfigure,
+        _serial: u32,
+    ) {
+        // Fullscreen/maximized configures carry a concrete size; a none means
+        // "pick your own", so keep the previous one.
+        if let Some(width) = configure.new_size.0 {
+            self.width = width.get();
+        }
+        if let Some(height) = configure.new_size.1 {
+            self.height = height.get();
+        }
+
+        if self.first_configure {
+            self.first_configure = false;
+            self.draw();
+        }
+    }
+}
+
+/// `layer-shell` feature: a `wlr-layer-shell` overlay. The layer is anchored to
+/// every edge, so the compositor configures us to the full output.
+#[cfg(feature = "layer-shell")]
 impl LayerShellHandler for Backend {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         self.exit = true;
@@ -687,6 +768,11 @@ delegate_output!(Backend);
 delegate_seat!(Backend);
 delegate_keyboard!(Backend);
 delegate_pointer!(Backend);
+#[cfg(not(feature = "layer-shell"))]
+delegate_xdg_shell!(Backend);
+#[cfg(not(feature = "layer-shell"))]
+delegate_xdg_window!(Backend);
+#[cfg(feature = "layer-shell")]
 delegate_layer!(Backend);
 delegate_registry!(Backend);
 
