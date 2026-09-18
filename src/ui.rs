@@ -47,6 +47,16 @@ impl eframe::App for Hring {
             self.view = view;
         }
 
+        // `Ctrl+H` / `Ctrl+L` switch pages like browser tabs. Ignored while a
+        // modal prompt is up, since it captures raw key presses as binds.
+        if !modal_active {
+            if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::H)) {
+                self.view = View::Keyboard;
+            } else if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::L)) {
+                self.view = View::AllApps;
+            }
+        }
+
         match self.view {
             View::Keyboard => {
                 if !modal_active {
@@ -112,6 +122,8 @@ impl Hring {
                 ui.vertical_centered(|ui| {
                     let (rect, response) =
                         ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+                    let response =
+                        response.on_hover_text("Ctrl+H — Keyboard    Ctrl+L — All Programs");
 
                     let hovered_index = response.hover_pos().map(|pos| {
                         ((pos.x - rect.left()) / segment_width)
@@ -611,6 +623,13 @@ impl Hring {
 
     /// Handles the group and application hotkeys of the keyboard launcher.
     fn handle_hotkeys(&mut self, ctx: &eframe::egui::Context) {
+        // Binds are stored as bare keys, so a modified press (`Ctrl+H`, ...) is
+        // a page shortcut, not an application hotkey.
+        let modifiers = ctx.input(|i| i.modifiers);
+        if modifiers.ctrl || modifiers.alt || modifiers.command {
+            return;
+        }
+
         // Selecting a group must never launch an app in the same frame:
         // even a single-app (or same-key) group requires two key presses.
         let mut selection_changed = false;

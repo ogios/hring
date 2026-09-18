@@ -30,6 +30,8 @@ You can also assign hotkeys without touching `binds.toml`:
 
 Press `Esc` to cancel any of these prompts. `binds.toml` is updated automatically, and a group that is left without applications is removed.
 
+The window has two pages, selected with the tabs at the top: **Keyboard** (the launcher graph) and **All Programs** (the searchable application list). You can also switch with `Ctrl+H` for the keyboard page and `Ctrl+L` for the application list.
+
 If the application doesn't launch after editing the configuration files, the error is most likely due to incorrect formatting. Try deleting them and letting the launcher create new ones.
 
 ### Examples
