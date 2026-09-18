@@ -14,6 +14,10 @@ use eframe::{
 
 use crate::{app::Hring, data::App, icon};
 
+/// How many decoded icons are uploaded per frame. Spreading them keeps a large
+/// batch from turning a single repaint into a visible hang.
+const ICON_UPLOADS_PER_FRAME: usize = 16;
+
 impl Hring {
     pub fn get_key(key: &str) -> Option<Key> {
         if let Some(key) = Key::from_name(key) {
@@ -172,6 +176,76 @@ impl Hring {
             Color32::TRANSPARENT,
             PathStroke::new(line_width, line_color),
         ));
+    }
+
+    /// Creates the background icon decoder on first use. It is lazy so `Hring`
+    /// can still be constructed before an egui context is available.
+    pub fn ensure_icon_loader(&mut self, ctx: &egui::Context) {
+        if self.icon_loader.is_none() {
+            self.icon_loader = Some(crate::app::IconLoader::spawn(ctx.clone()));
+        }
+    }
+
+    /// Uploads icons decoded by the background worker, a few per frame so a
+    /// burst of finished images does not stall a single repaint.
+    pub fn pump_icon_loader(&mut self, ctx: &egui::Context) {
+        let Some(loader) = self.icon_loader.as_mut() else {
+            return;
+        };
+
+        let mut uploaded = 0;
+
+        while uploaded < ICON_UPLOADS_PER_FRAME {
+            let Ok((path, image)) = loader.from_worker.try_recv() else {
+                break;
+            };
+
+            loader.requested.remove(&path);
+
+            let texture = image.map(|image| {
+                ctx.load_texture(
+                    format!("hring_icon:{path}"),
+                    image,
+                    egui::TextureOptions::LINEAR,
+                )
+            });
+
+            self.icon_textures.insert(path, texture);
+            uploaded += 1;
+        }
+
+        if uploaded == ICON_UPLOADS_PER_FRAME {
+            // More results may be queued: keep repainting so they drain without
+            // a long stall in one frame.
+            ctx.request_repaint();
+        }
+    }
+
+    /// Queues the icons the "All Programs" grid needs but does not have yet.
+    /// They are decoded in the background; the grid shows placeholders until
+    /// each one arrives.
+    pub fn request_icon_textures(&mut self, ctx: &egui::Context, paths: Vec<String>) {
+        let Some(loader) = self.icon_loader.as_mut() else {
+            return;
+        };
+
+        let mut queued = false;
+
+        for path in paths {
+            if self.icon_textures.contains_key(&path) || !loader.requested.insert(path.clone()) {
+                continue;
+            }
+
+            if loader.to_worker.send(path).is_err() {
+                break;
+            }
+
+            queued = true;
+        }
+
+        if queued {
+            ctx.request_repaint();
+        }
     }
 
     /// Uploads the texture of an icon on first use and remembers the result,

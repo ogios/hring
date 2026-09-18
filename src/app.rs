@@ -3,10 +3,10 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, version 3.
 
-use eframe::egui::TextureHandle;
+use eframe::egui::{ColorImage, Context, TextureHandle};
 use freedesktop_entry_parser::parse_entry;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::Path,
     sync::mpsc::{self, Receiver, Sender},
@@ -16,11 +16,53 @@ use std::{
 use crate::{
     config,
     data::{App, AppLink, Graphic, Group},
-    icon::IconIndex,
+    icon::{self, IconIndex},
 };
 
 /// Maps a lowercased application name to its exec command and resolved icon path.
 type AppLookup = HashMap<String, (String, Option<String>)>;
+
+/// Decodes application icons on a background thread.
+///
+/// The "All Programs" page may reference hundreds of icons, and decoding them
+/// on the UI thread (rasterizing SVGs especially) freezes the window. The
+/// worker only reads and decodes; the UI thread uploads the finished images as
+/// textures in small batches, so the grid fills in progressively instead of
+/// blocking the first frame.
+pub struct IconLoader {
+    pub to_worker: Sender<String>,
+    pub from_worker: Receiver<(String, Option<ColorImage>)>,
+    /// Paths already queued (or currently being decoded), so an icon is never
+    /// decoded twice.
+    pub requested: HashSet<String>,
+}
+
+impl IconLoader {
+    /// Spawns the decoding thread. `ctx` is used to wake the UI when an icon is
+    /// ready, since the window may otherwise be idle waiting for input.
+    pub fn spawn(ctx: Context) -> Self {
+        let (to_worker, from_update) = mpsc::channel::<String>();
+        let (to_update, from_worker) = mpsc::channel::<(String, Option<ColorImage>)>();
+
+        thread::spawn(move || {
+            while let Ok(path) = from_update.recv() {
+                let image = icon::load_color_image(Path::new(&path));
+
+                if to_update.send((path, image)).is_err() {
+                    break;
+                }
+
+                ctx.request_repaint();
+            }
+        });
+
+        Self {
+            to_worker,
+            from_worker,
+            requested: HashSet::new(),
+        }
+    }
+}
 
 /// Which key the user is expected to press next while editing a bind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +120,7 @@ pub struct Hring {
     pub binds: Vec<Group>,
     pub graphic: Graphic,
     pub icon_textures: HashMap<String, Option<TextureHandle>>,
+    pub icon_loader: Option<IconLoader>,
     pub from_config_loader: Receiver<Vec<Group>>,
     pub to_search_worker: Sender<String>,
     pub from_search_worker: Receiver<Vec<AppLink>>,
@@ -206,6 +249,7 @@ impl Default for Hring {
             binds: binds.unwrap_or_default(),
             graphic,
             icon_textures: HashMap::new(),
+            icon_loader: None,
             from_config_loader: receiver_update_from_config_loader,
             to_search_worker: sender_update_to_search,
             from_search_worker: receiver_update_from_search,

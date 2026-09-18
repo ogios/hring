@@ -28,6 +28,11 @@ impl eframe::App for Hring {
             self.apps = apps;
         }
 
+        // Start the background icon decoder and upload whatever it finished
+        // since the last frame.
+        self.ensure_icon_loader(ctx);
+        self.pump_icon_loader(ctx);
+
         // A modal prompt swallows the key press and pointer click of this frame,
         // so it must not also launch an app or trigger a normal hotkey.
         let modal_active = self.pending_assign.is_some() || self.pending_delete.is_some();
@@ -288,16 +293,15 @@ impl Hring {
         let mut app_to_execute = None;
         let mut assignment_request: Option<AppLink> = None;
 
-        // Upload the icons once before the grid is drawn, so a cell only looks
-        // up its texture instead of reading from disk every frame.
+        // Queue every icon the grid needs. They are decoded on a background
+        // thread and uploaded a few per frame, so switching to this page is
+        // instant: each cell shows a placeholder until its icon arrives.
         let icon_paths: Vec<String> = self
             .apps
             .iter()
             .filter_map(|app| app.icon.clone())
             .collect();
-        for icon_path in &icon_paths {
-            self.ensure_icon_texture(ctx, icon_path);
-        }
+        self.request_icon_textures(ctx, icon_paths);
 
         let apps = &self.apps;
         let textures = &self.icon_textures;
