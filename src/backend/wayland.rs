@@ -25,7 +25,8 @@ use smithay_client_toolkit::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
         pointer::{
-            BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler,
+            AxisScroll, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind,
+            PointerHandler,
         },
     },
     shell::WaylandSurface,
@@ -159,6 +160,11 @@ pub fn run(ctx: egui::Context, app: Hring) -> Result<(), Box<dyn std::error::Err
 
     let repaint_deadline: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
+    // Created before the backend so the keyboard can be set up with client-side
+    // key repeat (`get_keyboard_with_repeat` needs the loop handle).
+    let mut event_loop: calloop::EventLoop<Backend> = calloop::EventLoop::try_new()?;
+    let loop_handle = event_loop.handle();
+
     let mut backend = Backend {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -185,10 +191,8 @@ pub fn run(ctx: egui::Context, app: Hring) -> Result<(), Box<dyn std::error::Err
         needs_redraw: false,
         start,
         repaint_deadline: Arc::clone(&repaint_deadline),
+        loop_handle: loop_handle.clone(),
     };
-
-    let mut event_loop: calloop::EventLoop<Backend> = calloop::EventLoop::try_new()?;
-    let loop_handle = event_loop.handle();
 
     // `request_repaint` can be called from the UI thread or a background worker.
     // Turn it into a calloop ping (wakes the loop) plus the earliest wake time
@@ -288,6 +292,8 @@ struct Backend {
     start: Instant,
     /// Earliest time egui wants another frame (from `request_repaint`).
     repaint_deadline: Arc<Mutex<Option<Instant>>>,
+    /// Shared event-loop handle, needed to install the keyboard's repeat timer.
+    loop_handle: calloop::LoopHandle<'static, Backend>,
 }
 
 impl Backend {
@@ -606,7 +612,25 @@ impl SeatHandler for Backend {
         capability: Capability,
     ) {
         if capability == Capability::Keyboard && self.keyboard.is_none() {
-            self.keyboard = self.seat_state.get_keyboard(qh, &seat, None).ok();
+            // `get_keyboard_with_repeat` installs a timer that re-delivers a
+            // held key, so `hjkl` navigation scrolls/keeps moving on a long
+            // press. Plain `get_keyboard` never repeats: Wayland compositors
+            // do not re-send key presses themselves.
+            let loop_handle = self.loop_handle.clone();
+            self.keyboard = self
+                .seat_state
+                .get_keyboard_with_repeat(
+                    qh,
+                    &seat,
+                    None,
+                    loop_handle,
+                    Box::new(
+                        |state: &mut Backend, _: &wl_keyboard::WlKeyboard, event: KeyEvent| {
+                            state.push_key(event, true, true);
+                        },
+                    ),
+                )
+                .ok();
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
             self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
@@ -748,13 +772,8 @@ impl PointerHandler for Backend {
                     vertical,
                     ..
                 } => {
-                    // Wayland: positive vertical = scroll down. egui wants the
-                    // opposite sign (positive = content moves down).
-                    self.events.push(egui::Event::MouseWheel {
-                        unit: egui::MouseWheelUnit::Point,
-                        delta: egui::vec2(horizontal.absolute as f32, -vertical.absolute as f32),
-                        modifiers: self.modifiers,
-                    });
+                    self.events
+                        .push(scroll_event(horizontal, vertical, self.modifiers));
                 }
             }
         }
@@ -846,6 +865,48 @@ fn egui_modifiers(modifiers: &Modifiers) -> egui::Modifiers {
         mac_cmd: false,
         // On Linux, egui's "command" is Ctrl.
         command: modifiers.ctrl,
+    }
+}
+
+/// Converts a Wayland axis event into an egui mouse-wheel event.
+///
+/// A physical wheel reports whole notches: modern compositors send them as
+/// `value120` steps (120 per notch) and older ones as `discrete` steps. Those
+/// are emitted with [`egui::MouseWheelUnit::Line`], so egui scales them by the
+/// configurable `line_scroll_speed` and one notch scrolls a useful distance.
+/// Touchpads and other smooth sources carry no steps, so their pixel deltas are
+/// forwarded as-is with [`egui::MouseWheelUnit::Point`].
+fn scroll_event(
+    horizontal: &AxisScroll,
+    vertical: &AxisScroll,
+    modifiers: egui::Modifiers,
+) -> egui::Event {
+    let steps = |axis: &AxisScroll| {
+        if axis.value120 != 0 {
+            axis.value120 as f32 / 120.0
+        } else {
+            axis.discrete as f32
+        }
+    };
+
+    let (unit, delta) = if steps(horizontal) != 0.0 || steps(vertical) != 0.0 {
+        // Wayland: positive vertical = scroll down. egui wants the opposite
+        // sign (positive = content moves down).
+        (
+            egui::MouseWheelUnit::Line,
+            egui::vec2(steps(horizontal), -steps(vertical)),
+        )
+    } else {
+        (
+            egui::MouseWheelUnit::Point,
+            egui::vec2(horizontal.absolute as f32, -vertical.absolute as f32),
+        )
+    };
+
+    egui::Event::MouseWheel {
+        unit,
+        delta,
+        modifiers,
     }
 }
 

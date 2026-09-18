@@ -98,6 +98,9 @@ pub struct AllPrograms {
     pub cell_width_extra: f32,
     /// The grid is centered and never wider than this.
     pub max_content_width: f32,
+    /// How far one mouse-wheel notch scrolls the grid, in points. egui's own
+    /// default (`40.0`) feels sluggish on a full-screen grid, so this raises it.
+    pub scroll_speed: f32,
     /// Height reserved for the name, in line heights, and the line-height
     /// factor used to count how many lines fit.
     pub text_lines: f32,

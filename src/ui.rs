@@ -6,7 +6,8 @@
 use core::f32;
 
 use egui::{
-    self, Align2, FontId, Frame, Key, Response, RichText, ScrollArea, Vec2, ViewportCommand,
+    self, Align2, FontId, Frame, Key, Response, RichText, ScrollArea, Stroke, StrokeKind, Vec2,
+    ViewportCommand,
 };
 
 use crate::{
@@ -46,7 +47,13 @@ impl Hring {
             // While deleting, Enter confirms and Escape cancels.
             self.handle_pending_delete(ctx);
         } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            ctx.send_viewport_cmd(ViewportCommand::Close);
+            if self.all_apps_search_active {
+                // The first `Escape` only leaves the filter field; a second one
+                // (once search mode is off) closes the window.
+                self.all_apps_search_active = false;
+            } else {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
         }
 
         if let Some(view) = self.create_tab_bar(ctx) {
@@ -61,6 +68,12 @@ impl Hring {
             } else if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::L)) {
                 self.view = View::AllApps;
             }
+        }
+
+        // Search mode only makes sense on the "All Programs" page; leaving it
+        // must not swallow `Escape` on the keyboard page.
+        if self.view != View::AllApps {
+            self.all_apps_search_active = false;
         }
 
         self.draw_pages(ctx, modal_active);
@@ -260,12 +273,12 @@ impl Hring {
                 }
             });
 
-        if !modal_active
-            && settled
-            && self.view == View::AllApps
-            && let Some(text_edit) = &all_apps_text_edit
-        {
-            self.handle_search(text_edit, ctx);
+        if !modal_active && settled && self.view == View::AllApps {
+            if let Some(text_edit) = &all_apps_text_edit {
+                self.handle_search(text_edit, ctx);
+            }
+
+            self.handle_all_apps_nav(ctx);
         }
     }
 
@@ -280,12 +293,39 @@ impl Hring {
         let font_color = Self::get_color32(self.graphic.menu_items_font_color);
         let hover_color = Self::get_color32(self.graphic.menu_items_hover_color);
         let placeholder_color = Self::get_color32(self.graphic.app_color_unactive);
+        let selection_color = Self::get_color32(self.graphic.app_color_active);
         // Snapshot the grid tuning now, so the draw closure only captures these
         // plain values instead of borrowing `self.graphic`.
         let ap = self.graphic.all_programs.clone();
         let font_size = (self.graphic.menu_items_font_size * ap.font_scale).max(ap.font_size_min);
         let icon_size = (self.graphic.app_radius * ap.icon_radius_scale)
             .clamp(ap.icon_size_min, ap.icon_size_max);
+
+        // egui's default wheel step (`40.0`) feels sluggish on a full-screen
+        // grid, so it is raised here. The value is configurable, so the feel
+        // can be retuned without touching the code.
+        ctx.options_mut(|options| {
+            options.input_options.line_scroll_speed = ap.scroll_speed;
+        });
+
+        // Keep the keyboard selection inside the (possibly filtered) list. A
+        // valid index survives filtering, so the cursor does not jump while
+        // typing; a fresh grid starts on the first card.
+        if self.apps.is_empty() {
+            self.selected_app = None;
+        } else {
+            self.selected_app = Some(self.selected_app.unwrap_or(0).min(self.apps.len() - 1));
+        }
+
+        // Navigation state produced by the key handler on the previous frame.
+        let selected_app = self.selected_app;
+        let scroll_to_selected = std::mem::take(&mut self.all_apps_scroll_to_selected);
+        let pending_scroll = std::mem::take(&mut self.all_apps_scroll_delta);
+        // Geometry is measured while drawing and stored back afterwards, so the
+        // next frame's key handler can move by rows and scroll by pages.
+        let mut measured_columns = self.all_apps_columns.max(1);
+        let mut measured_scroll_step = self.all_apps_scroll_step;
+        let search_active = self.all_apps_search_active;
 
         let mut app_to_execute = None;
         let mut assignment_request: Option<AppLink> = None;
@@ -319,197 +359,238 @@ impl Hring {
                                 .hint_text("Search applications..."),
                         );
 
+                        // Search mode (`/`) keeps the filter field focused; it
+                        // is re-requested every frame, so a lost focus can never
+                        // leave the page unable to filter again. Leaving search
+                        // mode (`Escape`) hands the keyboard back to navigation.
+                        if search_active {
+                            if !text_edit.has_focus() {
+                                text_edit.request_focus();
+                            }
+                        } else if text_edit.has_focus() {
+                            text_edit.surrender_focus();
+                        }
+
                         ui.add_space(10.0);
 
-                        ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                // Cards are spaced apart generously; the gutter
-                                // is the only separation between them.
-                                let gap = ap.gap;
-                                let padding_x = ap.padding_x;
-                                let padding_top = ap.padding_top;
-                                let padding_bottom = ap.padding_bottom;
-                                let icon_text_gap = ap.icon_text_gap;
-                                ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
+                        // Named so the scroll offset can be driven by the
+                        // keyboard (`Shift+J`/`Shift+K`) as well as the wheel.
+                        let scroll_area = ScrollArea::vertical()
+                            .id_salt("all_apps_scroll")
+                            .auto_shrink([false, false]);
 
-                                // Keep the grid away from the window edges and
-                                // cap how wide it grows, then center the block.
-                                let full_width = ui.available_width();
-                                let content_width = full_width.min(ap.max_content_width);
-                                let side_margin =
-                                    ((full_width - content_width) / 2.0 - gap).max(0.0);
+                        scroll_area.show(ui, |ui| {
+                            // `Shift+J`/`Shift+K` move the content; a
+                            // negative delta scrolls the view down.
+                            if pending_scroll != 0.0 {
+                                ui.scroll_with_delta(Vec2::new(0.0, -pending_scroll));
+                            }
 
-                                // Fit as many columns as the capped width allows,
-                                // then stretch them so a full row fills it.
-                                let available = content_width;
-                                let min_cell_width =
-                                    (icon_size + padding_x * 2.0 + ap.cell_width_extra)
-                                        .max(ap.min_cell_width);
-                                let columns = ((available + gap) / (min_cell_width + gap))
-                                    .floor()
-                                    .max(1.0)
-                                    as usize;
-                                let cell_width =
-                                    (available - gap * (columns as f32 - 1.0)) / columns as f32;
-                                let cell_height = padding_top
-                                    + icon_size
-                                    + icon_text_gap
-                                    + font_size * ap.text_lines
-                                    + padding_bottom;
-                                // Lines of name text that fit between the icon
-                                // and the bottom of the card before it would
-                                // spill into the row below.
-                                let text_max_rows = ((cell_height
-                                    - (padding_top + icon_size + icon_text_gap + padding_bottom))
-                                    / (font_size * ap.text_line_height))
-                                    .floor()
-                                    .max(1.0)
-                                    as usize;
+                            // Cards are spaced apart generously; the gutter
+                            // is the only separation between them.
+                            let gap = ap.gap;
+                            let padding_x = ap.padding_x;
+                            let padding_top = ap.padding_top;
+                            let padding_bottom = ap.padding_bottom;
+                            let icon_text_gap = ap.icon_text_gap;
+                            ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
 
-                                if apps.is_empty() {
-                                    ui.label(
-                                        RichText::new("No applications found")
-                                            .color(font_color)
-                                            .size(font_size),
-                                    );
-                                }
+                            // Keep the grid away from the window edges and
+                            // cap how wide it grows, then center the block.
+                            let full_width = ui.available_width();
+                            let content_width = full_width.min(ap.max_content_width);
+                            let side_margin = ((full_width - content_width) / 2.0 - gap).max(0.0);
 
-                                for row in apps.chunks(columns) {
-                                    ui.horizontal(|ui| {
-                                        if side_margin > 0.0 {
-                                            ui.add_space(side_margin);
-                                        }
-                                        for app in row {
-                                            let (rect, response) = ui.allocate_exact_size(
-                                                Vec2::new(cell_width, cell_height),
-                                                egui::Sense::click(),
-                                            );
-                                            let response =
-                                                response.on_hover_text(app.name.as_str());
+                            // Fit as many columns as the capped width allows,
+                            // then stretch them so a full row fills it.
+                            let available = content_width;
+                            let min_cell_width =
+                                (icon_size + padding_x * 2.0 + ap.cell_width_extra)
+                                    .max(ap.min_cell_width);
+                            let columns = ((available + gap) / (min_cell_width + gap))
+                                .floor()
+                                .max(1.0) as usize;
+                            let cell_width =
+                                (available - gap * (columns as f32 - 1.0)) / columns as f32;
+                            let cell_height = padding_top
+                                + icon_size
+                                + icon_text_gap
+                                + font_size * ap.text_lines
+                                + padding_bottom;
+                            // Lines of name text that fit between the icon
+                            // and the bottom of the card before it would
+                            // spill into the row below.
+                            let text_max_rows = ((cell_height
+                                - (padding_top + icon_size + icon_text_gap + padding_bottom))
+                                / (font_size * ap.text_line_height))
+                                .floor()
+                                .max(1.0) as usize;
 
-                                            let painter = ui.painter();
-                                            let hovered = response.hovered();
+                            measured_columns = columns;
+                            measured_scroll_step = (cell_height * 3.0).max(60.0);
 
-                                            painter.rect_filled(
+                            // Screen rect of the selected card, captured
+                            // while drawing so it can be scrolled into view.
+                            let mut selected_rect: Option<egui::Rect> = None;
+
+                            if apps.is_empty() {
+                                ui.label(
+                                    RichText::new("No applications found")
+                                        .color(font_color)
+                                        .size(font_size),
+                                );
+                            }
+
+                            for (row_index, row) in apps.chunks(columns).enumerate() {
+                                ui.horizontal(|ui| {
+                                    if side_margin > 0.0 {
+                                        ui.add_space(side_margin);
+                                    }
+                                    for (col_index, app) in row.iter().enumerate() {
+                                        let index = row_index * columns + col_index;
+                                        let is_selected = selected_app == Some(index);
+
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            Vec2::new(cell_width, cell_height),
+                                            egui::Sense::click(),
+                                        );
+                                        let response = response.on_hover_text(app.name.as_str());
+
+                                        let painter = ui.painter();
+                                        let hovered = response.hovered();
+
+                                        painter.rect_filled(
+                                            rect,
+                                            ap.corner_radius,
+                                            Self::with_alpha(
+                                                hover_color,
+                                                if hovered || is_selected {
+                                                    ap.hover_alpha
+                                                } else {
+                                                    ap.idle_alpha
+                                                },
+                                            ),
+                                        );
+
+                                        // Keyboard selection ring.
+                                        if is_selected {
+                                            painter.rect_stroke(
                                                 rect,
                                                 ap.corner_radius,
-                                                Self::with_alpha(
-                                                    hover_color,
-                                                    if hovered {
-                                                        ap.hover_alpha
-                                                    } else {
-                                                        ap.idle_alpha
-                                                    },
-                                                ),
+                                                Stroke::new(2.0, selection_color),
+                                                StrokeKind::Inside,
                                             );
-                                            if hovered {
-                                                ui.ctx().set_cursor_icon(
-                                                    egui::CursorIcon::PointingHand,
-                                                );
-                                            }
-
-                                            let icon_center = egui::pos2(
-                                                rect.center().x,
-                                                rect.top() + padding_top + icon_size / 2.0,
-                                            );
-                                            let icon_rect = egui::Rect::from_center_size(
-                                                icon_center,
-                                                Vec2::splat(icon_size),
-                                            );
-
-                                            let texture = app
-                                                .icon
-                                                .as_deref()
-                                                .and_then(|path| textures.get(path))
-                                                .and_then(|texture| texture.as_ref());
-
-                                            if let Some(texture) = texture {
-                                                painter.image(
-                                                    texture.id(),
-                                                    icon_rect,
-                                                    egui::Rect::from_min_max(
-                                                        egui::pos2(0.0, 0.0),
-                                                        egui::pos2(1.0, 1.0),
-                                                    ),
-                                                    egui::Color32::WHITE,
-                                                );
-                                            } else {
-                                                // No icon resolved: fall back to
-                                                // the app's initial on a chip.
-                                                painter.rect_filled(
-                                                    icon_rect,
-                                                    ap.corner_radius,
-                                                    placeholder_color,
-                                                );
-                                                let initial = app
-                                                    .name
-                                                    .chars()
-                                                    .next()
-                                                    .map(|c| c.to_uppercase().to_string())
-                                                    .unwrap_or_default();
-                                                painter.text(
-                                                    icon_center,
-                                                    Align2::CENTER_CENTER,
-                                                    initial,
-                                                    FontId::proportional(icon_size * 0.55),
-                                                    font_color,
-                                                );
-                                            }
-
-                                            // Clamp the name to the card: wrap it
-                                            // over a few lines and ellipsize the
-                                            // rest, so a long title cannot spill
-                                            // over the icon of the next row.
-                                            let mut job = egui::text::LayoutJob::single_section(
-                                                app.name.clone(),
-                                                egui::text::TextFormat {
-                                                    font_id: FontId::proportional(font_size),
-                                                    color: font_color,
-                                                    ..Default::default()
-                                                },
-                                            );
-                                            job.wrap = egui::text::TextWrapping {
-                                                max_width: cell_width - padding_x * 2.0,
-                                                max_rows: text_max_rows,
-                                                ..Default::default()
-                                            };
-                                            let galley = painter.layout_job(job);
-                                            // epaint ships no bold weight, so the
-                                            // name is thickened by overdrawing it
-                                            // with a tiny offset.
-                                            let text_pos = egui::pos2(
-                                                rect.center().x - galley.size().x / 2.0,
-                                                icon_rect.bottom() + icon_text_gap,
-                                            );
-                                            let text_painter = painter.with_clip_rect(rect);
-                                            text_painter.galley(
-                                                text_pos,
-                                                galley.clone(),
-                                                font_color,
-                                            );
-                                            text_painter.galley(
-                                                text_pos + Vec2::new(ap.font_bold_offset, 0.0),
-                                                galley.clone(),
-                                                font_color,
-                                            );
-                                            text_painter.galley(
-                                                text_pos + Vec2::new(0.0, ap.font_bold_offset),
-                                                galley,
-                                                font_color,
-                                            );
-
-                                            if response.clicked() && !input_locked {
-                                                app_to_execute = Some(app.exec.clone());
-                                            }
-
-                                            if response.secondary_clicked() && !input_locked {
-                                                assignment_request = Some(app.clone());
-                                            }
+                                            selected_rect = Some(rect);
                                         }
-                                    });
-                                }
-                            });
+
+                                        if hovered {
+                                            ui.ctx()
+                                                .set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        }
+
+                                        let icon_center = egui::pos2(
+                                            rect.center().x,
+                                            rect.top() + padding_top + icon_size / 2.0,
+                                        );
+                                        let icon_rect = egui::Rect::from_center_size(
+                                            icon_center,
+                                            Vec2::splat(icon_size),
+                                        );
+
+                                        let texture = app
+                                            .icon
+                                            .as_deref()
+                                            .and_then(|path| textures.get(path))
+                                            .and_then(|texture| texture.as_ref());
+
+                                        if let Some(texture) = texture {
+                                            painter.image(
+                                                texture.id(),
+                                                icon_rect,
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                ),
+                                                egui::Color32::WHITE,
+                                            );
+                                        } else {
+                                            // No icon resolved: fall back to
+                                            // the app's initial on a chip.
+                                            painter.rect_filled(
+                                                icon_rect,
+                                                ap.corner_radius,
+                                                placeholder_color,
+                                            );
+                                            let initial = app
+                                                .name
+                                                .chars()
+                                                .next()
+                                                .map(|c| c.to_uppercase().to_string())
+                                                .unwrap_or_default();
+                                            painter.text(
+                                                icon_center,
+                                                Align2::CENTER_CENTER,
+                                                initial,
+                                                FontId::proportional(icon_size * 0.55),
+                                                font_color,
+                                            );
+                                        }
+
+                                        // Clamp the name to the card: wrap it
+                                        // over a few lines and ellipsize the
+                                        // rest, so a long title cannot spill
+                                        // over the icon of the next row.
+                                        let mut job = egui::text::LayoutJob::single_section(
+                                            app.name.clone(),
+                                            egui::text::TextFormat {
+                                                font_id: FontId::proportional(font_size),
+                                                color: font_color,
+                                                ..Default::default()
+                                            },
+                                        );
+                                        job.wrap = egui::text::TextWrapping {
+                                            max_width: cell_width - padding_x * 2.0,
+                                            max_rows: text_max_rows,
+                                            ..Default::default()
+                                        };
+                                        let galley = painter.layout_job(job);
+                                        // epaint ships no bold weight, so the
+                                        // name is thickened by overdrawing it
+                                        // with a tiny offset.
+                                        let text_pos = egui::pos2(
+                                            rect.center().x - galley.size().x / 2.0,
+                                            icon_rect.bottom() + icon_text_gap,
+                                        );
+                                        let text_painter = painter.with_clip_rect(rect);
+                                        text_painter.galley(text_pos, galley.clone(), font_color);
+                                        text_painter.galley(
+                                            text_pos + Vec2::new(ap.font_bold_offset, 0.0),
+                                            galley.clone(),
+                                            font_color,
+                                        );
+                                        text_painter.galley(
+                                            text_pos + Vec2::new(0.0, ap.font_bold_offset),
+                                            galley,
+                                            font_color,
+                                        );
+
+                                        if response.clicked() && !input_locked {
+                                            app_to_execute = Some(app.exec.clone());
+                                        }
+
+                                        if response.secondary_clicked() && !input_locked {
+                                            assignment_request = Some(app.clone());
+                                        }
+                                    }
+                                });
+                            }
+
+                            // `h`/`j`/`k`/`l` moved the cursor: pull the
+                            // selected card back into view if it scrolled off.
+                            if scroll_to_selected && let Some(rect) = selected_rect {
+                                ui.scroll_to_rect(rect, None);
+                            }
+                        });
 
                         text_edit
                     })
@@ -525,6 +606,10 @@ impl Hring {
         if let Some(exec_path) = app_to_execute {
             Self::exec_app(ctx, &exec_path);
         }
+
+        // Remembered for the next frame's `handle_all_apps_nav`.
+        self.all_apps_columns = measured_columns;
+        self.all_apps_scroll_step = measured_scroll_step;
 
         text_edit
     }
@@ -876,25 +961,102 @@ impl Hring {
     }
 
     /// Handles typing in the search box of the "All Programs" page.
+    ///
+    /// `Enter` launches the selected app, whether or not the field has focus,
+    /// which keeps the vim-style flow (`/` to filter, `Enter` to run).
     fn handle_search(&mut self, text_edit: &Response, ctx: &egui::Context) {
-        let enter_pressed = ctx.input(|i| i.key_pressed(Key::Enter));
-
         if text_edit.changed() {
+            // The list changes under the cursor; start again from the top.
+            self.selected_app = Some(0);
+            self.all_apps_scroll_to_selected = true;
             self.to_search_worker
                 .send(self.search_text.clone())
                 .expect("SearchThread not reachable!");
         }
 
-        if enter_pressed {
-            if text_edit.has_focus() || text_edit.lost_focus() {
-                if self.search_text.is_empty() {
-                    text_edit.surrender_focus();
-                } else if let Some(app) = self.apps.first() {
-                    Self::exec_app(ctx, &app.exec);
-                }
-            } else {
-                text_edit.request_focus();
+        if ctx.input(|i| i.key_pressed(Key::Enter)) {
+            self.launch_selected(ctx);
+        }
+    }
+
+    /// Launches the app the "All Programs" grid has selected.
+    fn launch_selected(&mut self, ctx: &egui::Context) {
+        let Some(index) = self
+            .selected_app
+            .or(if self.apps.is_empty() { None } else { Some(0) })
+        else {
+            return;
+        };
+
+        if let Some(app) = self.apps.get(index) {
+            Self::exec_app(ctx, &app.exec);
+        }
+    }
+
+    /// Vim-style navigation for the "All Programs" grid:
+    /// `h`/`j`/`k`/`l` move the selection, `Shift+J`/`Shift+K` scroll the grid,
+    /// `/` focuses the filter field and `Enter` launches the selected app.
+    ///
+    /// Ignored while search mode is active, so `j` there types instead of
+    /// moving.
+    fn handle_all_apps_nav(&mut self, ctx: &egui::Context) {
+        if self.all_apps_search_active || self.apps.is_empty() {
+            return;
+        }
+
+        // Binds are bare keys: a modified press is a page shortcut, not a move.
+        // `Shift` is the exception, since it drives the scroll pair.
+        let modifiers = ctx.input(|i| i.modifiers);
+        if modifiers.ctrl || modifiers.alt || modifiers.command {
+            return;
+        }
+
+        let (j, k, h, l, slash) = ctx.input(|i| {
+            (
+                i.key_pressed(Key::J),
+                i.key_pressed(Key::K),
+                i.key_pressed(Key::H),
+                i.key_pressed(Key::L),
+                i.key_pressed(Key::Slash),
+            )
+        });
+
+        if slash {
+            self.all_apps_search_active = true;
+            return;
+        }
+
+        if modifiers.shift {
+            // Positive delta scrolls the view down.
+            if j {
+                self.all_apps_scroll_delta += self.all_apps_scroll_step;
+            } else if k {
+                self.all_apps_scroll_delta -= self.all_apps_scroll_step;
             }
+            return;
+        }
+
+        let columns = self.all_apps_columns.max(1);
+        let last = self.apps.len() - 1;
+        let current = self.selected_app.unwrap_or(0).min(last);
+
+        let next = if j {
+            Some((current + columns).min(last))
+        } else if k {
+            Some(current.saturating_sub(columns))
+        } else if l {
+            Some((current + 1).min(last))
+        } else if h {
+            Some(current.saturating_sub(1))
+        } else {
+            None
+        };
+
+        if let Some(next) = next
+            && self.selected_app != Some(next)
+        {
+            self.selected_app = Some(next);
+            self.all_apps_scroll_to_selected = true;
         }
     }
 

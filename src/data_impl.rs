@@ -25,6 +25,7 @@ impl Default for AllPrograms {
             min_cell_width: 200.0,
             cell_width_extra: 72.0,
             max_content_width: 1680.0,
+            scroll_speed: 100.0,
             text_lines: 2.6,
             text_line_height: 1.25,
             corner_radius: 10.0,

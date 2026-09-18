@@ -136,6 +136,24 @@ pub struct Hring {
     pub selected_group: Option<usize>,
     pub pending_assign: Option<PendingAssign>,
     pub pending_delete: Option<PendingDelete>,
+    /// Index into `apps` of the card the "All Programs" grid has selected.
+    /// Keyboard navigation (`h`/`j`/`k`/`l`) moves it, `Enter` launches it.
+    pub selected_app: Option<usize>,
+    /// Column count of the "All Programs" grid, remembered from the last frame
+    /// so `j`/`k` can move the selection by whole rows.
+    pub all_apps_columns: usize,
+    /// Scroll distance, in points, applied by the next grid draw. `Shift+J`
+    /// and `Shift+K` accumulate into it.
+    pub all_apps_scroll_delta: f32,
+    /// Steps the grid scrolls per `Shift+J`/`Shift+K`, derived from the cell
+    /// height while drawing.
+    pub all_apps_scroll_step: f32,
+    /// Set when the selection moved, so the grid scrolls it back into view.
+    pub all_apps_scroll_to_selected: bool,
+    /// "Search mode" of the "All Programs" page: started by `/`, left with
+    /// `Escape`. While it is set the grid keeps the filter field focused and
+    /// the navigation keys type instead of moving.
+    pub all_apps_search_active: bool,
 }
 
 impl std::fmt::Debug for Hring {
@@ -291,6 +309,12 @@ impl Hring {
             selected_group: None,
             pending_assign: None,
             pending_delete: None,
+            selected_app: None,
+            all_apps_columns: 1,
+            all_apps_scroll_delta: 0.0,
+            all_apps_scroll_step: 120.0,
+            all_apps_scroll_to_selected: false,
+            all_apps_search_active: false,
         }
     }
 }
