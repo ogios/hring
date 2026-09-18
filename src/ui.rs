@@ -152,60 +152,108 @@ impl Hring {
             return;
         }
 
-        let Some(pending) = self.pending_assign.as_mut() else {
+        let Some(pending) = self.pending_assign.as_ref() else {
             return;
         };
 
+        let stage = pending.stage;
+        let app = pending.app.clone();
+        let group_index = pending.group_index;
+        let new_group_bind = pending.new_group_bind.clone();
+
         let bind = key.name().to_ascii_lowercase();
 
-        match pending.stage {
+        match stage {
             AssignStage::GroupKey => {
-                // Reuse an existing group with the same bind, otherwise remember
-                // the bind and create the group once the app key arrives.
-                pending.group_index = self
+                // Reuse an existing group with the same bind, otherwise create a
+                // new group once the app key arrives.
+                if let Some(index) = self
                     .binds
                     .iter()
-                    .position(|group| group.bind.eq_ignore_ascii_case(&bind));
-                pending.new_group_bind = pending.group_index.is_none().then_some(bind);
-                pending.stage = AssignStage::AppKey;
+                    .position(|group| group.bind.eq_ignore_ascii_case(&bind))
+                {
+                    if let Some(pending) = self.pending_assign.as_mut() {
+                        pending.group_index = Some(index);
+                        pending.new_group_bind = None;
+                        pending.stage = AssignStage::AppKey;
+                        pending.warning = None;
+                    }
+                } else if let Some(owner) = Self::app_using_bind(&self.binds, &bind, None) {
+                    self.warn_assign(format!("Key [{bind}] already launches \"{owner}\""));
+                } else if let Some(pending) = self.pending_assign.as_mut() {
+                    pending.new_group_bind = Some(bind);
+                    pending.group_index = None;
+                    pending.stage = AssignStage::AppKey;
+                    pending.warning = None;
+                }
             }
             AssignStage::AppKey => {
-                let index = match pending.group_index {
-                    Some(index) => index,
-                    None => {
-                        let group_bind = pending
-                            .new_group_bind
-                            .clone()
-                            .expect("New group bind must be captured before the app bind!");
+                // A group bind must stay unique, otherwise pressing it would
+                // both switch groups and launch an app.
+                if let Some(group_bind) = self
+                    .binds
+                    .iter()
+                    .find(|group| group.bind.eq_ignore_ascii_case(&bind))
+                    .map(|group| group.bind.clone())
+                {
+                    self.warn_assign(format!(
+                        "Key [{bind}] is already the group key [{group_bind}]"
+                    ));
+                } else if let Some(owner) =
+                    Self::app_using_bind(&self.binds, &bind, Some(&app.name))
+                {
+                    self.warn_assign(format!("Key [{bind}] already launches \"{owner}\""));
+                } else {
+                    let index = match group_index {
+                        Some(index) => index,
+                        None => {
+                            let group_bind = new_group_bind
+                                .expect("New group bind must be captured before the app bind!");
 
-                        self.binds.push(Group {
-                            bind: group_bind,
-                            apps: Vec::new(),
+                            self.binds.push(Group {
+                                bind: group_bind,
+                                apps: Vec::new(),
+                            });
+
+                            self.binds.len() - 1
+                        }
+                    };
+
+                    if let Some(group) = self.binds.get_mut(index) {
+                        // Drop a previous entry for this app and any app that
+                        // already uses the freshly captured key.
+                        group
+                            .apps
+                            .retain(|a| a.name != app.name && !a.bind.eq_ignore_ascii_case(&bind));
+                        group.apps.push(App {
+                            bind,
+                            name: app.name,
+                            exec: app.exec,
+                            icon: app.icon,
                         });
-
-                        self.binds.len() - 1
                     }
-                };
 
-                let app = pending.app.clone();
-
-                if let Some(group) = self.binds.get_mut(index) {
-                    // Drop a previous entry for this app and any app that
-                    // already uses the freshly captured key.
-                    group
-                        .apps
-                        .retain(|a| a.name != app.name && !a.bind.eq_ignore_ascii_case(&bind));
-                    group.apps.push(App {
-                        bind,
-                        name: app.name,
-                        exec: app.exec,
-                        icon: app.icon,
-                    });
+                    self.pending_assign = None;
+                    self.persist_binds();
                 }
-
-                self.pending_assign = None;
-                self.persist_binds();
             }
+        }
+    }
+
+    /// Returns the name of the first app in any group that uses `bind`.
+    fn app_using_bind(binds: &[Group], bind: &str, exclude_name: Option<&str>) -> Option<String> {
+        binds
+            .iter()
+            .flat_map(|group| group.apps.iter())
+            .find(|app| {
+                exclude_name != Some(app.name.as_str()) && app.bind.eq_ignore_ascii_case(bind)
+            })
+            .map(|app| app.name.clone())
+    }
+
+    fn warn_assign(&mut self, message: String) {
+        if let Some(pending) = self.pending_assign.as_mut() {
+            pending.warning = Some(message);
         }
     }
 
@@ -366,6 +414,12 @@ impl Hring {
                     ui.add_space(6.0);
                     ui.label(RichText::new(title).size(16.0));
                     ui.label(RichText::new(detail).weak());
+
+                    if let Some(warning) = &pending.warning {
+                        ui.add_space(6.0);
+                        ui.colored_label(egui::Color32::LIGHT_RED, warning);
+                    }
+
                     ui.add_space(6.0);
                     ui.label(RichText::new("Esc — cancel").weak());
                 });
@@ -394,21 +448,30 @@ impl Hring {
         }
 
         if !text_edit.has_focus() {
+            // Selecting a group must never launch an app in the same frame:
+            // even a single-app (or same-key) group requires two key presses.
+            let mut selection_changed = false;
+
             for (index, group) in self.binds.iter().enumerate() {
                 if let Some(key) = Self::get_key(&group.bind)
                     && ctx.input(|i| i.key_pressed(key))
+                    && self.selected_group != Some(index)
                 {
                     self.selected_group = Some(index);
+                    selection_changed = true;
                 }
+            }
 
-                if self.selected_group == Some(index) {
-                    group.apps.iter().for_each(|app| {
-                        if let Some(key) = Self::get_key(&app.bind)
-                            && ctx.input(|i| i.key_pressed(key))
-                        {
-                            Self::exec_app(ctx, &app.exec);
-                        }
-                    });
+            if !selection_changed
+                && let Some(group) = self.selected_group.and_then(|index| self.binds.get(index))
+            {
+                for app in &group.apps {
+                    if let Some(key) = Self::get_key(&app.bind)
+                        && ctx.input(|i| i.key_pressed(key))
+                    {
+                        Self::exec_app(ctx, &app.exec);
+                        break;
+                    }
                 }
             }
         }

@@ -41,6 +41,8 @@ pub struct PendingAssign {
     /// Bind of the group that is going to be created on the next captured key.
     pub new_group_bind: Option<String>,
     pub stage: AssignStage,
+    /// Why the last captured key was rejected, shown in the prompt.
+    pub warning: Option<String>,
 }
 
 impl PendingAssign {
@@ -50,6 +52,7 @@ impl PendingAssign {
             group_index: None,
             new_group_bind: None,
             stage: AssignStage::GroupKey,
+            warning: None,
         }
     }
 
@@ -61,6 +64,7 @@ impl PendingAssign {
             group_index: Some(group_index),
             new_group_bind: None,
             stage: AssignStage::AppKey,
+            warning: None,
         }
     }
 }
