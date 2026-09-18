@@ -37,7 +37,7 @@ impl Default for AllPrograms {
 impl Default for Graphic {
     fn default() -> Self {
         Graphic {
-            main_panel_color: (255, 255, 255, 10),
+            main_panel_color: (15, 17, 15, 200),
             left_panel_color: (20, 22, 20, 230),
             left_panel_width: 240.0,
             all_programs: AllPrograms::default(),
