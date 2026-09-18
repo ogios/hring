@@ -76,6 +76,33 @@ pub fn get_binds_from_cache() -> Option<Vec<Group>> {
     converter::convert_cache_in_structure(&cache_string)
 }
 
+/// Returns `true` when both caches exist and are newer than every input that
+/// feeds them: `config.toml`, `binds.toml` and the `.desktop` directories.
+///
+/// A fresh cache already holds the resolved app links and groups the first
+/// frame needs, so the caller can skip the expensive rescan (walking the icon
+/// themes and parsing every desktop entry) that would otherwise run on each
+/// launch.
+pub fn caches_are_fresh(global_config: &GlobalConfig) -> bool {
+    let cache_mtime = [app_links_cache_path(), binds_cache_path()]
+        .into_iter()
+        .filter_map(|path| file_loader::modified_time(&path))
+        .min();
+
+    // If either cache is missing there is nothing to reuse.
+    let Some(cache_mtime) = cache_mtime else {
+        return false;
+    };
+
+    let inputs = [gloval_config_path(), binds_config_path()]
+        .into_iter()
+        .chain(global_config.pathes.iter().map(PathBuf::from));
+
+    inputs
+        .filter_map(|path| file_loader::modified_time(&path))
+        .all(|input_mtime| input_mtime <= cache_mtime)
+}
+
 pub fn get_binds_from_config() -> Vec<ConfGroup> {
     let default_binds_config = BindsConfig::default();
     if let Some((config_string, _)) = file_loader::read_config_file(&binds_config_path()) {

@@ -148,6 +148,12 @@ impl Default for Hring {
         let apps = config::get_app_links_from_cache();
         let binds = config::get_binds_from_cache();
 
+        // The caches already hold everything the first frame needs, so only
+        // rebuild them when one is missing or older than its inputs. A normal
+        // launch then skips the icon-index walk and the desktop-entry scan.
+        let needs_rescan =
+            apps.is_none() || binds.is_none() || !config::caches_are_fresh(&glocal_config);
+
         let (sender_config_loader_to_update, receiver_update_from_config_loader): (
             Sender<Vec<Group>>,
             Receiver<Vec<Group>>,
@@ -168,42 +174,44 @@ impl Default for Hring {
             Receiver<Vec<AppLink>>,
         ) = mpsc::channel();
 
-        // config_loader thread
-        thread::spawn(move || {
-            let (app_links, hash_map) = Self::search_app_links(glocal_config.pathes);
-            let conf_groups = config::get_binds_from_config();
+        // config_loader thread, only when the caches need rebuilding.
+        if needs_rescan {
+            thread::spawn(move || {
+                let (app_links, hash_map) = Self::search_app_links(glocal_config.pathes);
+                let conf_groups = config::get_binds_from_config();
 
-            let groups: Vec<Group> = conf_groups
-                .into_iter()
-                .map(|g| {
-                    let apps: Vec<App> = g
-                        .apps
-                        .into_iter()
-                        .filter_map(|a| {
-                            if let Some((exec, icon)) = hash_map.get(&a.name.to_lowercase()) {
-                                Some(App {
-                                    bind: a.bind,
-                                    name: a.name,
-                                    exec: exec.clone(),
-                                    icon: icon.clone(),
-                                })
-                            } else {
-                                println!("App {} not fround!", a.name);
-                                None
-                            }
-                        })
-                        .collect();
+                let groups: Vec<Group> = conf_groups
+                    .into_iter()
+                    .map(|g| {
+                        let apps: Vec<App> = g
+                            .apps
+                            .into_iter()
+                            .filter_map(|a| {
+                                if let Some((exec, icon)) = hash_map.get(&a.name.to_lowercase()) {
+                                    Some(App {
+                                        bind: a.bind,
+                                        name: a.name,
+                                        exec: exec.clone(),
+                                        icon: icon.clone(),
+                                    })
+                                } else {
+                                    println!("App {} not fround!", a.name);
+                                    None
+                                }
+                            })
+                            .collect();
 
-                    Group { bind: g.bind, apps }
-                })
-                .collect();
+                        Group { bind: g.bind, apps }
+                    })
+                    .collect();
 
-            config::create_new_cache_for_groups(&groups);
-            config::create_new_cache_for_app_links(&app_links);
+                config::create_new_cache_for_groups(&groups);
+                config::create_new_cache_for_app_links(&app_links);
 
-            _ = sender_config_loader_to_update.send(groups);
-            _ = sender_config_loader_to_search.send(app_links);
-        });
+                _ = sender_config_loader_to_update.send(groups);
+                _ = sender_config_loader_to_search.send(app_links);
+            });
+        }
 
         // search thread
         thread::spawn(move || {
