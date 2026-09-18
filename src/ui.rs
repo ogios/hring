@@ -98,9 +98,14 @@ impl Hring {
         };
 
         // The pill glides towards the active segment instead of snapping, so a
-        // page switch reads as a slide. egui keeps repainting until it settles.
-        let animated_index =
-            ctx.animate_value_with_time(egui::Id::new("tab_bar_pill"), active_index as f32, 0.18);
+        // page switch reads as a slide. The configured easing curve shapes it,
+        // and egui keeps repainting until the animation settles.
+        let animated_index = ctx.animate_bool_with_time_and_easing(
+            egui::Id::new("tab_bar_pill"),
+            self.view == View::AllApps,
+            0.22,
+            self.graphic.animation_easing.function(),
+        );
 
         let mut requested_view = None;
 
@@ -200,8 +205,14 @@ impl Hring {
             View::AllApps => 1.0,
         };
 
-        // Lags behind `target`, so the pages move instead of snapping.
-        let anim = ctx.animate_value_with_time(egui::Id::new("page_slide"), target, 0.25);
+        // Lags behind `target`, so the pages move instead of snapping. The
+        // configured easing curve shapes the motion.
+        let anim = ctx.animate_bool_with_time_and_easing(
+            egui::Id::new("page_slide"),
+            self.view == View::AllApps,
+            0.28,
+            self.graphic.animation_easing.function(),
+        );
         let settled = (anim - target).abs() < 0.001;
 
         // Hotkeys are only handled once the pages have settled, so a key press

@@ -27,12 +27,62 @@ pub struct Group {
     pub apps: Vec<App>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
+#[serde(rename_all = "snake_case")]
+pub enum Easing {
+    Linear,
+    QuadraticIn,
+    QuadraticOut,
+    QuadraticInOut,
+    CubicIn,
+    CubicOut,
+    CubicInOut,
+    ExponentialIn,
+    ExponentialOut,
+    SinIn,
+    SinOut,
+    SinInOut,
+}
+
+/// Fallback for `graphic.toml` files written before the easing option existed.
+fn default_easing() -> Easing {
+    Easing::QuadraticOut
+}
+
+impl Easing {
+    /// Maps the configured curve to the matching `egui` easing function.
+    pub fn function(self) -> fn(f32) -> f32 {
+        use eframe::egui::emath::easing;
+
+        match self {
+            Easing::Linear => easing::linear,
+            Easing::QuadraticIn => easing::quadratic_in,
+            Easing::QuadraticOut => easing::quadratic_out,
+            Easing::QuadraticInOut => easing::quadratic_in_out,
+            Easing::CubicIn => easing::cubic_in,
+            Easing::CubicOut => easing::cubic_out,
+            Easing::CubicInOut => easing::cubic_in_out,
+            Easing::ExponentialIn => easing::exponential_in,
+            Easing::ExponentialOut => easing::exponential_out,
+            Easing::SinIn => easing::sin_in,
+            Easing::SinOut => easing::sin_out,
+            Easing::SinInOut => easing::sin_in_out,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct Graphic {
     // Panels
     pub main_panel_color: (u8, u8, u8, u8),
     pub left_panel_color: (u8, u8, u8, u8),
     pub left_panel_width: f32,
+
+    // Animation
+    /// Easing curve used for the tab and page transitions. Older configs that
+    /// predate this field fall back to `quadratic_out`.
+    #[serde(default = "default_easing")]
+    pub animation_easing: Easing,
 
     // Menu Panel
     pub menu_items_hover_color: (u8, u8, u8, u8),
@@ -128,4 +178,26 @@ pub struct ConfApp {
 pub struct ConfGroup {
     pub bind: String,
     pub apps: Vec<ConfApp>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Configs written before `animation_easing` existed must still load and
+    /// fall back to the default curve.
+    #[test]
+    fn missing_easing_falls_back_to_default() {
+        let full = toml::to_string(&GraphicConfig::default()).unwrap();
+        assert!(full.contains("animation_easing"));
+
+        let without: String = full
+            .lines()
+            .filter(|line| !line.contains("animation_easing"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let parsed: GraphicConfig = toml::from_str(&without).unwrap();
+        assert_eq!(parsed.graphic.animation_easing, Easing::QuadraticOut);
+    }
 }

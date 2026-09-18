@@ -4,6 +4,12 @@ main_panel_color =[5, 8, 14, 255]
 left_panel_color =[10, 14, 22, 255]
 left_panel_width = 150.0
 
+# Animation
+# linear, quadratic_in, quadratic_out, quadratic_in_out,
+# cubic_in, cubic_out, cubic_in_out, exponential_in, exponential_out,
+# sin_in, sin_out, sin_in_out
+animation_easing = "quadratic_out"
+
 # Menu Panel
 menu_items_hover_color = [0, 240, 255, 70]
 menu_items_font_color =[180, 230, 255, 255]

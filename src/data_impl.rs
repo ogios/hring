@@ -5,7 +5,7 @@
 
 use crate::{
     config,
-    data::{BindsConfig, ConfApp, ConfGroup, GlobalConfig, Graphic},
+    data::{BindsConfig, ConfApp, ConfGroup, Easing, GlobalConfig, Graphic},
 };
 
 impl Default for Graphic {
@@ -14,6 +14,7 @@ impl Default for Graphic {
             main_panel_color: (255, 255, 255, 10),
             left_panel_color: (20, 22, 20, 230),
             left_panel_width: 240.0,
+            animation_easing: Easing::QuadraticOut,
             menu_items_hover_color: (92, 184, 122, 50),
             menu_items_font_color: (230, 230, 230, 255),
             menu_items_font_size: 14.0,
