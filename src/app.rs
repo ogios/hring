@@ -3,7 +3,7 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, version 3.
 
-use eframe::egui::{ColorImage, Context, TextureHandle};
+use egui::{ColorImage, Context, TextureHandle};
 use freedesktop_entry_parser::parse_entry;
 use std::{
     collections::{HashMap, HashSet},
@@ -149,6 +149,17 @@ impl std::fmt::Debug for Hring {
 
 impl Default for Hring {
     fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl Hring {
+    /// Builds the launcher and spawns the background workers.
+    ///
+    /// `repaint_ctx`, when set, is handed to the background threads so they can
+    /// wake the UI after delivering data (the native backend only redraws on
+    /// input or an explicit `request_repaint`).
+    pub fn new(repaint_ctx: Option<Context>) -> Self {
         let graphic = config::get_graphic();
         let glocal_config = config::get_global_config();
         let apps = config::get_app_links_from_cache();
@@ -176,6 +187,7 @@ impl Default for Hring {
 
         // config_loader thread. It waits out the startup animation, then
         // rescans in the background and refreshes both caches.
+        let config_repaint = repaint_ctx.clone();
         thread::spawn(move || {
             thread::sleep(BACKGROUND_RESCAN_DELAY);
 
@@ -212,9 +224,14 @@ impl Default for Hring {
 
             _ = sender_config_loader_to_update.send(groups);
             _ = sender_config_loader_to_search.send(app_links);
+
+            if let Some(ctx) = &config_repaint {
+                ctx.request_repaint();
+            }
         });
 
         // search thread
+        let search_repaint = repaint_ctx.clone();
         thread::spawn(move || {
             let mut was_updated_from_loader = false;
             let has_apps_from_cache = apps.is_some();
@@ -238,6 +255,9 @@ impl Default for Hring {
                 // searching
                 if !was_updated_from_loader && !has_apps_from_cache {
                     _ = sender_search_to_update.send(Vec::new());
+                    if let Some(ctx) = &search_repaint {
+                        ctx.request_repaint();
+                    }
                     continue;
                 }
 
@@ -248,6 +268,9 @@ impl Default for Hring {
                     .collect();
 
                 _ = sender_search_to_update.send(filtred_apps);
+                if let Some(ctx) = &search_repaint {
+                    ctx.request_repaint();
+                }
             }
         });
 

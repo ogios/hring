@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use eframe::egui::ColorImage;
+use egui::ColorImage;
 
 /// Size (in pixels) the icons are rasterized to before they are uploaded as textures.
 const ICON_PIXEL_SIZE: u32 = 128;

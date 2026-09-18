@@ -57,6 +57,17 @@ cargo build --release
 # The binary will be available at target/release/hring
 ```
 
+The renderer is selected at compile time with Cargo features:
+
+``` Bash
+# CPU rasterizer (default): egui_software_backend + wl_shm. Fast startup.
+cargo build --release
+
+# GPU: wgpu + egui-wgpu on the same layer-shell surface. Faster frames, but
+# wgpu initialization adds a few hundred ms to startup.
+cargo build --release --no-default-features --features gpu
+```
+
 ### Build an Arch package
 
 `PKGBUILD` contains a `pkgver()` function that derives the version from git
@@ -94,7 +105,9 @@ I'm always happy if you decide to help develop the Hring. See the [Contributing]
 
 ## Build With
 - `Rust`
-- `eframe`
+- `egui`
+- `smithay-client-toolkit`
+- `egui_software_backend` (CPU) / `wgpu` + `egui-wgpu` (GPU)
 - `serde`
 - `toml`
 - `bincode`

@@ -6,8 +6,8 @@
 use core::f32;
 use std::{path::Path, process::Command};
 
-use eframe::{
-    egui::{self, Align2, Color32, FontId, Key, Pos2, Stroke, Vec2, ViewportCommand},
+use egui::{
+    self, Align2, Color32, FontId, Key, Pos2, Stroke, Vec2, ViewportCommand,
     emath::Rot2,
     epaint::{self, PathShape, PathStroke},
 };
@@ -28,7 +28,7 @@ impl Hring {
         }
     }
 
-    pub fn exec_app(ctx: &eframe::egui::Context, exec_str: &str) {
+    pub fn exec_app(ctx: &egui::Context, exec_str: &str) {
         _ = Command::new("sh").arg("-c").arg(exec_str).spawn().ok();
         ctx.send_viewport_cmd(ViewportCommand::Close);
     }
