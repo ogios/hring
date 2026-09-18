@@ -112,6 +112,11 @@ impl Hring {
             View::AllApps => 1,
         };
 
+        // The pill glides towards the active segment instead of snapping, so a
+        // page switch reads as a slide. egui keeps repainting until it settles.
+        let animated_index =
+            ctx.animate_value_with_time(egui::Id::new("tab_bar_pill"), active_index as f32, 0.18);
+
         let mut requested_view = None;
 
         egui::TopBottomPanel::top("tab_bar")
@@ -150,7 +155,7 @@ impl Hring {
                     // Sliding pill under the selected segment, with a soft glow.
                     let pill_rect = egui::Rect::from_min_size(
                         egui::pos2(
-                            rect.left() + segment_width * active_index as f32 + inset,
+                            rect.left() + segment_width * animated_index + inset,
                             rect.top() + inset,
                         ),
                         Vec2::new(segment_width - inset * 2.0, height - inset * 2.0),
@@ -210,7 +215,6 @@ impl Hring {
         input_locked: bool,
     ) -> Response {
         let panel_color = Self::get_color32(self.graphic.main_panel_color);
-        let card_color = Self::with_alpha(Self::get_color32(self.graphic.left_panel_color), 240);
         let font_color = Self::get_color32(self.graphic.menu_items_font_color);
         let hover_color = Self::get_color32(self.graphic.menu_items_hover_color);
         let font_size = self.graphic.menu_items_font_size;
@@ -219,70 +223,46 @@ impl Hring {
         let mut assignment_request: Option<AppLink> = None;
 
         let text_edit = egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(panel_color))
+            .frame(Frame::NONE.fill(panel_color).inner_margin(24.0))
             .show(ctx, |ui| {
-                let available = ui.available_rect_before_wrap();
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("All Programs").color(font_color).size(18.0));
+                    ui.add_space(8.0);
 
-                let margin = 24.0;
-                let card_width = (available.width() - margin * 2.0).clamp(240.0, 720.0);
-                let card_height = (available.height() - margin * 2.0).max(160.0);
+                    let text_edit = ui.add_sized(
+                        [ui.available_width(), 26.0],
+                        egui::TextEdit::singleline(&mut self.search_text)
+                            .hint_text("Search applications..."),
+                    );
 
-                let card_rect = egui::Rect::from_center_size(
-                    available.center(),
-                    Vec2::new(card_width, card_height),
-                );
+                    ui.add_space(10.0);
 
-                // Soft drop shadow behind the card.
-                ui.painter().rect_filled(
-                    card_rect.expand(6.0),
-                    22.0,
-                    egui::Color32::from_black_alpha(70),
-                );
-                ui.painter().rect_filled(card_rect, 18.0, card_color);
+                    ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            let width = ui.available_width();
 
-                let inner_rect = card_rect.shrink2(Vec2::new(24.0, 20.0));
+                            for app in &self.apps {
+                                let button_text =
+                                    RichText::new(&app.name).color(font_color).size(font_size);
 
-                ui.scope_builder(egui::UiBuilder::new().max_rect(inner_rect), |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("All Programs").color(font_color).size(18.0));
-                        ui.add_space(8.0);
+                                let btn = egui::Button::selectable(false, button_text)
+                                    .fill(hover_color);
 
-                        let text_edit = ui.add_sized(
-                            [ui.available_width(), 26.0],
-                            egui::TextEdit::singleline(&mut self.search_text)
-                                .hint_text("Search applications..."),
-                        );
+                                let app_response = ui.add_sized([width, 24.0], btn);
 
-                        ui.add_space(10.0);
-
-                        ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                let width = ui.available_width();
-
-                                for app in &self.apps {
-                                    let button_text =
-                                        RichText::new(&app.name).color(font_color).size(font_size);
-
-                                    let btn = egui::Button::selectable(false, button_text)
-                                        .fill(hover_color);
-
-                                    let app_response = ui.add_sized([width, 24.0], btn);
-
-                                    // Right-click starts the two-key shortcut capture.
-                                    if app_response.secondary_clicked() && !input_locked {
-                                        assignment_request = Some(app.clone());
-                                    }
-
-                                    if app_response.clicked() && !input_locked {
-                                        app_to_execute = Some(app.exec.clone());
-                                    };
+                                // Right-click starts the two-key shortcut capture.
+                                if app_response.secondary_clicked() && !input_locked {
+                                    assignment_request = Some(app.clone());
                                 }
-                            });
 
-                        text_edit
-                    })
-                    .inner
+                                if app_response.clicked() && !input_locked {
+                                    app_to_execute = Some(app.exec.clone());
+                                };
+                            }
+                        });
+
+                    text_edit
                 })
                 .inner
             })
