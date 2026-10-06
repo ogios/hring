@@ -137,19 +137,21 @@ pub struct Hring {
     pub pending_assign: Option<PendingAssign>,
     pub pending_delete: Option<PendingDelete>,
     /// Index into `apps` of the card the "All Programs" grid has selected.
-    /// Keyboard navigation (`h`/`j`/`k`/`l`) moves it, `Enter` launches it.
+    /// Arrow keys move it, `Enter` launches it.
     pub selected_app: Option<usize>,
     /// Column count of the "All Programs" grid, remembered from the last frame
-    /// so `j`/`k` can move the selection by whole rows.
+    /// so Up/Down can move the selection by whole rows.
     pub all_apps_columns: usize,
-    /// Scroll distance, in points, applied by the next grid draw. `Shift+J`
-    /// and `Shift+K` accumulate into it.
+    /// Scroll distance, in points, applied by the next grid draw. `PageDown`
+    /// and `PageUp` accumulate into it.
     pub all_apps_scroll_delta: f32,
-    /// Steps the grid scrolls per `Shift+J`/`Shift+K`, derived from the cell
+    /// Steps the grid scrolls per `PageDown`/`PageUp`, derived from the cell
     /// height while drawing.
     pub all_apps_scroll_step: f32,
     /// Set when the selection moved, so the grid scrolls it back into view.
     pub all_apps_scroll_to_selected: bool,
+    /// Letter selected by the index and the time its temporary emphasis began.
+    pub all_apps_group_focus: Option<(char, f64)>,
     /// "Search mode" of the "All Programs" page: started by `/`, left with
     /// `Escape`. While it is set the grid keeps the filter field focused and
     /// the navigation keys type instead of moving.
@@ -314,6 +316,7 @@ impl Hring {
             all_apps_scroll_delta: 0.0,
             all_apps_scroll_step: 120.0,
             all_apps_scroll_to_selected: false,
+            all_apps_group_focus: None,
             all_apps_search_active: false,
         }
     }

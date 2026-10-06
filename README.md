@@ -32,6 +32,14 @@ Press `Esc` to cancel any of these prompts. `binds.toml` is updated automaticall
 
 The window has two pages, selected with the tabs at the top: **Keyboard** (the launcher graph) and **All Programs** (the searchable application list). You can also switch with `Ctrl+H` for the keyboard page and `Ctrl+L` for the application list.
 
+**All Programs** groups applications by their initial from **A** to **Z**, with a letter heading and divider above each group. Names starting with other characters appear in a final **#** group. Search results keep the same grouping.
+
+Click a letter in the vertical Dock on the left (or a group heading) to scroll smoothly and center that group in the application viewport. All letters fit within the screen without an index scrollbar. Nearby buttons and letters grow smoothly as the pointer approaches, while the other letters share the remaining space. The group is briefly highlighted while the other groups dim, then the grid returns to its normal appearance. Letters without matching applications are disabled.
+
+Letter rows meet without gaps. The row under the pointer is highlighted across its entire click area so the next click's target is clear.
+
+Outside search mode, pressing any **A–Z** key jumps to its group with the same highlight. Use the arrow keys to move the application selection, **PageUp/PageDown** (or **Shift+Up/Down**) to scroll, and **Enter** to launch. Press **/** to search; letters typed in search mode only update the filter. **Escape** leaves search mode.
+
 The **All Programs** grid can be tuned in the `[graphic.all_programs]` table of `graphic.toml` (card size, padding, gaps, icon and font scale, grid width, ...). Every key is optional, so you can add one at a time and keep adjusting.
 
 If the application doesn't launch after editing the configuration files, the error is most likely due to incorrect formatting. Try deleting them and letting the launcher create new ones.
