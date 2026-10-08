@@ -14,7 +14,29 @@ use crate::{
     app::{AssignStage, Hring, PendingAssign, PendingDelete, View},
     config,
     data::{App, AppLink, ConfApp, ConfGroup, Group},
+    helpers::HoverEffect,
 };
+
+fn keyboard_node_scale(ui: &egui::Ui, id: egui::Id, proximity: f32, growth: f32) -> f32 {
+    let scale = 1.0 + growth * ui.ctx().animate_value_with_time(id, proximity, 0.12);
+    ui.ctx().data_mut(|data| data.insert_temp(id, scale));
+    scale
+}
+
+fn previous_keyboard_node_scale(ui: &egui::Ui, id: egui::Id) -> f32 {
+    ui.ctx()
+        .data(|data| data.get_temp::<f32>(id))
+        .unwrap_or(1.0)
+}
+
+fn keyboard_node_proximity(center: egui::Pos2, radius: f32, pointer: Option<egui::Pos2>) -> f32 {
+    // Measure from a fixed center so enlargement cannot move its own target.
+    pointer.map_or(0.0, |pointer| {
+        (1.0 - (pointer.distance(center) - radius).max(0.0) / 100.0)
+            .clamp(0.0, 1.0)
+            .powi(2)
+    })
+}
 
 fn app_letter_group(name: &str) -> char {
     name.trim_start()
@@ -1648,7 +1670,7 @@ impl Hring {
         let mut group_to_select: Option<usize> = None;
         let mut rebind_request: Option<(usize, usize)> = None;
         let mut delete_request: Option<(usize, usize)> = None;
-        let mut hovering_app = false;
+        let mut hovering_node = false;
 
         {
             let painter = ui.painter().clone();
@@ -1663,27 +1685,53 @@ impl Hring {
 
                     let start_rad = step_rad * (index as f32);
                     let end_rad = start_rad + step_rad;
-
-                    // Click inside the wedge selects its group.
-                    if let Some(pos) = click_pos {
+                    let center_rad = (start_rad + end_rad) / 2.0;
+                    let bind_pos = center
+                        + Vec2::new(
+                            g.segment_radius * center_rad.cos(),
+                            -g.segment_radius * center_rad.sin(),
+                        );
+                    let group_id = ui.id().with(("keyboard_group", index));
+                    let contains_group_at_scale = |pos: egui::Pos2, scale: f32| {
                         let delta = pos - center;
-                        let mut angle = (-delta.y).atan2(delta.x);
-                        if angle < 0.0 {
-                            angle += f32::consts::TAU;
-                        }
+                        let angle = (-delta.y).atan2(delta.x).rem_euclid(f32::consts::TAU);
+                        pos.distance(bind_pos) <= g.segment_bind_radius * scale
+                            || (delta.length() <= g.segment_radius * scale
+                                && delta.length() >= g.center_radius
+                                && angle >= start_rad
+                                && angle < end_rad)
+                    };
+                    let previous_scale = previous_keyboard_node_scale(ui, group_id.with("scale"));
+                    let group_proximity = if hover_pos
+                        .is_some_and(|pos| contains_group_at_scale(pos, previous_scale))
+                    {
+                        1.0
+                    } else {
+                        keyboard_node_proximity(bind_pos, g.segment_bind_radius, hover_pos)
+                    };
+                    let group_scale =
+                        keyboard_node_scale(ui, group_id.with("scale"), group_proximity, 0.25);
+                    let contains_group =
+                        |pos: egui::Pos2| contains_group_at_scale(pos, group_scale);
+                    let group_hovered = hover_pos.is_some_and(contains_group);
+                    hovering_node |= group_hovered;
+                    let group_hover = HoverEffect {
+                        scale: group_scale,
+                        highlight: ctx.animate_bool_with_time_and_easing(
+                            group_id.with("highlight"),
+                            group_hovered,
+                            0.12,
+                            g.animation_easing.function(),
+                        ),
+                    };
 
-                        if delta.length() <= g.segment_radius
-                            && delta.length() >= g.center_radius
-                            && angle >= start_rad
-                            && angle <= end_rad
-                        {
-                            group_to_select = Some(index);
-                        }
+                    // Both the enlarged wedge and its key badge select a group.
+                    if click_pos.is_some_and(contains_group) {
+                        group_to_select = Some(index);
                     }
 
                     if !group.apps.is_empty() {
                         let apps_count = group.apps.len();
-                        let center_rad = step_rad / 2.0 + start_rad;
                         let apps_start_deg = center_rad
                             - (((apps_count as i32 / 2) - 1) as f32 * g.apps_spacing_rad + {
                                 if apps_count % 2 == 1 {
@@ -1706,47 +1754,96 @@ impl Hring {
                                     g.app_offset * crt_app_rad.cos(),
                                     g.app_offset * -crt_app_rad.sin(),
                                 );
+                            let app_id = ui.id().with(("keyboard_app", index, i));
+                            // Use the idle title as a fixed proximity target so
+                            // resizing cannot move it away from the pointer.
+                            let reference_title = self.layout_app_title(
+                                &painter,
+                                &app.name,
+                                app_pos,
+                                crt_app_rad,
+                                is_selected,
+                                1.0,
+                            );
+                            let title_proximity = hover_pos.map_or(0.0, |pos| {
+                                (1.0 - reference_title.distance(pos) / 100.0)
+                                    .clamp(0.0, 1.0)
+                                    .powi(2)
+                            });
+                            let previous_scale =
+                                previous_keyboard_node_scale(ui, app_id.with("scale"));
+                            let previous_title = self.layout_app_title(
+                                &painter,
+                                &app.name,
+                                app_pos,
+                                crt_app_rad,
+                                is_selected,
+                                previous_scale,
+                            );
+                            let proximity = if hover_pos.is_some_and(|pos| {
+                                pos.distance(app_pos) <= g.app_radius * previous_scale
+                                    || reference_title.contains(pos)
+                                    || previous_title.contains(pos)
+                            }) {
+                                // Stay at maximum size everywhere inside the
+                                // visible node, including its enlarged edges.
+                                1.0
+                            } else {
+                                keyboard_node_proximity(app_pos, g.app_radius, hover_pos)
+                                    .max(title_proximity)
+                            };
+                            let scale =
+                                keyboard_node_scale(ui, app_id.with("scale"), proximity, 0.5);
+                            let title = self.layout_app_title(
+                                &painter,
+                                &app.name,
+                                app_pos,
+                                crt_app_rad,
+                                is_selected,
+                                scale,
+                            );
+                            let radius = g.app_radius * scale;
+                            // Include both the reference and painted title to
+                            // keep hover stable and accept its enlarged edges.
+                            let contains_app = |pos: egui::Pos2| {
+                                pos.distance(app_pos) <= radius
+                                    || reference_title.contains(pos)
+                                    || title.contains(pos)
+                            };
+                            let hovered = hover_pos.is_some_and(contains_app);
+                            hovering_node |= hovered;
+                            let hover = HoverEffect {
+                                scale,
+                                highlight: ctx.animate_bool_with_time_and_easing(
+                                    app_id.with("highlight"),
+                                    hovered,
+                                    0.12,
+                                    g.animation_easing.function(),
+                                ),
+                            };
 
-                            if let Some(pos) = click_pos
-                                && pos.distance(app_pos) <= g.app_radius
-                            {
+                            if click_pos.is_some_and(contains_app) {
                                 app_to_execute = Some(app.exec.clone());
                             }
 
                             // Right-click rewrites the launch key.
-                            if let Some(pos) = rebind_pos
-                                && pos.distance(app_pos) <= g.app_radius
-                            {
+                            if rebind_pos.is_some_and(contains_app) {
                                 rebind_request = Some((index, i));
                             }
 
                             // Middle-click asks to delete the shortcut.
-                            if let Some(pos) = delete_pos
-                                && pos.distance(app_pos) <= g.app_radius
-                            {
+                            if delete_pos.is_some_and(contains_app) {
                                 delete_request = Some((index, i));
-                            }
-
-                            if let Some(pos) = hover_pos
-                                && pos.distance(app_pos) <= g.app_radius
-                            {
-                                hovering_app = true;
                             }
 
                             // Draw Lines
                             self.draw_line(&painter, center, center_rad, crt_app_rad, is_selected);
 
                             // Draw AppText
-                            self.draw_app_text(
-                                &painter,
-                                &app.name,
-                                center,
-                                crt_app_rad,
-                                is_selected,
-                            );
+                            self.draw_app_text(&painter, title, is_selected, hover);
 
                             // Draw Apps
-                            self.draw_apps(&painter, center, crt_app_rad, is_selected, app);
+                            self.draw_apps(&painter, center, crt_app_rad, is_selected, app, hover);
                         });
                     }
 
@@ -1758,6 +1855,7 @@ impl Hring {
                         end_rad,
                         is_selected,
                         group.bind.clone(),
+                        group_hover,
                     );
                 });
             }
@@ -1801,7 +1899,7 @@ impl Hring {
 
         if let Some(exec) = app_to_execute {
             Self::exec_app(ctx, &exec);
-        } else if hovering_app {
+        } else if hovering_node {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
     }
@@ -1910,6 +2008,483 @@ mod tests {
             repeat: false,
             modifiers,
         }
+    }
+
+    fn keyboard_launcher() -> Hring {
+        let mut launcher = test_launcher(&[]);
+        launcher.view = View::Keyboard;
+        launcher.binds = [("A", "X", "alpha"), ("B", "Y", "bravo")]
+            .into_iter()
+            .map(|(group_bind, app_bind, name)| Group {
+                bind: group_bind.to_string(),
+                apps: vec![App {
+                    bind: app_bind.to_string(),
+                    name: name.to_string(),
+                    exec: String::new(),
+                    icon: None,
+                }],
+            })
+            .collect();
+        launcher
+    }
+
+    fn keyboard_frame(
+        ctx: &egui::Context,
+        launcher: &mut Hring,
+        time: f64,
+        events: Vec<egui::Event>,
+        input_locked: bool,
+    ) -> egui::FullOutput {
+        ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1000.0, 700.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    launcher.draw_keyboard_page(ui, ctx, input_locked);
+                });
+            },
+        )
+    }
+
+    fn settled_keyboard_frame(
+        ctx: &egui::Context,
+        launcher: &mut Hring,
+        time: f64,
+        events: Vec<egui::Event>,
+        input_locked: bool,
+    ) -> egui::FullOutput {
+        let mut output = keyboard_frame(ctx, launcher, time, events, input_locked);
+        for step in 1..=12 {
+            output = keyboard_frame(
+                ctx,
+                launcher,
+                time + f64::from(step) * 0.02,
+                Vec::new(),
+                input_locked,
+            );
+        }
+        output
+    }
+
+    fn circle_at(output: &egui::FullOutput, center: egui::Pos2) -> egui::epaint::CircleShape {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Circle(circle) if circle.center.distance(center) < 0.1 => {
+                    Some(*circle)
+                }
+                _ => None,
+            })
+            .expect("node circle should be drawn")
+    }
+
+    fn title_background(output: &egui::FullOutput, label: &str) -> egui::epaint::PathShape {
+        output
+            .shapes
+            .windows(2)
+            .find_map(|pair| match (&pair[0].shape, &pair[1].shape) {
+                (egui::Shape::Path(path), egui::Shape::Text(text))
+                    if text.galley.text() == label =>
+                {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .expect("title background should be drawn")
+    }
+
+    fn title_point(path: &egui::epaint::PathShape, along: f32) -> egui::Pos2 {
+        path.points[0]
+            + (path.points[1] - path.points[0]) * along
+            + (path.points[3] - path.points[0]) * 0.5
+    }
+
+    #[test]
+    fn keyboard_rotated_titles_drive_proximity_and_keep_hover_at_maximum_size() {
+        for index in 0..4 {
+            let ctx = egui::Context::default();
+            let mut launcher = keyboard_launcher();
+            launcher.binds = (0..4)
+                .map(|index| Group {
+                    bind: ["A", "B", "C", "D"][index].to_string(),
+                    apps: vec![App {
+                        bind: ["X", "Y", "W", "V"][index].to_string(),
+                        name: format!("long title {index}"),
+                        exec: String::new(),
+                        icon: None,
+                    }],
+                })
+                .collect();
+            let label = format!("long title {index}");
+            let initial = keyboard_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
+            let bind = letter_text(&initial, ["X", "Y", "W", "V"][index], 0);
+            let center = bind.pos + bind.galley.size() * 0.5;
+            let idle = circle_at(&initial, center);
+            let path = title_background(&initial, &label);
+            let title_center = title_point(&path, 0.8);
+            let normal = (path.points[3] - path.points[0]).normalized();
+            let far = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.1,
+                vec![egui::Event::PointerMoved(title_center + normal * 80.0)],
+                false,
+            );
+            let near = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.4,
+                vec![egui::Event::PointerMoved(title_center + normal * 35.0)],
+                false,
+            );
+            assert!(circle_at(&far, center).radius > idle.radius);
+            assert!(circle_at(&near, center).radius > circle_at(&far, center).radius);
+            assert_eq!(circle_at(&near, center).fill, idle.fill);
+            let mut hovered = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.7,
+                vec![egui::Event::PointerMoved(title_center)],
+                false,
+            );
+            let enlarged = circle_at(&hovered, center);
+            assert!((enlarged.radius / idle.radius - 1.5).abs() < 0.01);
+            assert_ne!(title_background(&hovered, &label).fill, path.fill);
+            assert_eq!(
+                hovered.platform_output.cursor_icon,
+                egui::CursorIcon::PointingHand
+            );
+            assert_eq!(launcher.selected_group, None);
+
+            for (step, along) in [0.2, 0.8, 0.85, 0.5].into_iter().enumerate() {
+                let target = title_point(&title_background(&hovered, &label), along);
+                assert!(target.distance(center) > enlarged.radius);
+                hovered = settled_keyboard_frame(
+                    &ctx,
+                    &mut launcher,
+                    1.0 + step as f64 * 0.3,
+                    vec![egui::Event::PointerMoved(target)],
+                    false,
+                );
+                assert!((circle_at(&hovered, center).radius - enlarged.radius).abs() < 0.01);
+                assert_eq!(circle_at(&hovered, center).fill, enlarged.fill);
+            }
+            let icon_edge = center + normal * (enlarged.radius - 1.0);
+            let on_icon = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                2.3,
+                vec![egui::Event::PointerMoved(icon_edge)],
+                false,
+            );
+            assert!((circle_at(&on_icon, center).radius - enlarged.radius).abs() < 0.01);
+
+            // A rotated title's bounding box includes corners outside the title.
+            let bounds = egui::Rect::from_points(&title_background(&hovered, &label).points);
+            let corner = [
+                bounds.left_top(),
+                bounds.right_top(),
+                bounds.left_bottom(),
+                bounds.right_bottom(),
+            ]
+            .into_iter()
+            .max_by(|a, b| a.distance(center).total_cmp(&b.distance(center)))
+            .unwrap();
+            let corner = corner + (bounds.center() - corner) * 0.01;
+            assert!(corner.distance(center) > enlarged.radius);
+            let outside = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                2.6,
+                vec![egui::Event::PointerMoved(corner)],
+                false,
+            );
+            assert_eq!(
+                circle_at(&outside, center).fill,
+                idle.fill,
+                "index={index}, corner={corner:?}"
+            );
+            let restored = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                2.9,
+                vec![egui::Event::PointerGone],
+                false,
+            );
+            assert!((circle_at(&restored, center).radius - idle.radius).abs() < 0.01);
+            assert_eq!(title_background(&restored, &label).fill, path.fill);
+        }
+    }
+
+    #[test]
+    fn keyboard_titles_accept_shortcut_actions_at_their_enlarged_edges() {
+        for button in [egui::PointerButton::Secondary, egui::PointerButton::Middle] {
+            let ctx = egui::Context::default();
+            let mut launcher = keyboard_launcher();
+            let initial = keyboard_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
+            let pointer = title_point(&title_background(&initial, "alpha"), 0.8);
+            let hovered = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.1,
+                vec![egui::Event::PointerMoved(pointer)],
+                false,
+            );
+            let pointer = title_point(&title_background(&hovered, "alpha"), 0.95);
+            for (time, pressed) in [(0.4, true), (0.45, false)] {
+                keyboard_frame(
+                    &ctx,
+                    &mut launcher,
+                    time,
+                    vec![
+                        egui::Event::PointerMoved(pointer),
+                        egui::Event::PointerButton {
+                            pos: pointer,
+                            button,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    false,
+                );
+            }
+            if button == egui::PointerButton::Secondary {
+                assert_eq!(launcher.pending_assign.unwrap().app.name, "alpha");
+            } else {
+                let pending = launcher.pending_delete.unwrap();
+                assert_eq!((pending.group_index, pending.app_index), (0, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn keyboard_nodes_grow_with_proximity_and_highlight_only_on_hover() {
+        for selected in [None, Some(0)] {
+            let ctx = egui::Context::default();
+            let mut launcher = keyboard_launcher();
+            launcher.selected_group = selected;
+            let initial = keyboard_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
+            let bind = letter_text(&initial, "X", 0);
+            let center = bind.pos + bind.galley.size() * 0.5;
+            let idle = circle_at(&initial, center);
+            let far = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.1,
+                vec![egui::Event::PointerMoved(center + Vec2::new(80.0, 0.0))],
+                false,
+            );
+            let near = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.4,
+                vec![egui::Event::PointerMoved(center + Vec2::new(45.0, 0.0))],
+                false,
+            );
+            assert!(circle_at(&far, center).radius > idle.radius);
+            assert!(circle_at(&near, center).radius > circle_at(&far, center).radius);
+            assert_eq!(circle_at(&far, center).fill, idle.fill);
+            assert_eq!(circle_at(&near, center).fill, idle.fill);
+
+            let starting = keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.7,
+                vec![egui::Event::PointerMoved(center)],
+                false,
+            );
+            let hovered = settled_keyboard_frame(&ctx, &mut launcher, 0.72, Vec::new(), false);
+            let enlarged = circle_at(&hovered, center);
+            assert!(enlarged.radius > circle_at(&starting, center).radius);
+            assert!((enlarged.radius / idle.radius - 1.5).abs() < 0.01);
+            assert_ne!(enlarged.fill, idle.fill);
+            assert_eq!(
+                hovered.platform_output.cursor_icon,
+                egui::CursorIcon::PointingHand
+            );
+            for label in ["X", "alpha"] {
+                assert!(
+                    letter_text(&hovered, label, 0).galley.size().y
+                        > letter_text(&initial, label, 0).galley.size().y
+                );
+            }
+            assert_eq!(launcher.selected_group, selected);
+
+            let locked = settled_keyboard_frame(&ctx, &mut launcher, 1.1, Vec::new(), true);
+            assert!((circle_at(&locked, center).radius - idle.radius).abs() < 0.01);
+            assert_eq!(circle_at(&locked, center).fill, idle.fill);
+            settled_keyboard_frame(&ctx, &mut launcher, 1.4, Vec::new(), false);
+            let restored = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                1.7,
+                vec![egui::Event::PointerGone],
+                false,
+            );
+            assert!((circle_at(&restored, center).radius - idle.radius).abs() < 0.01);
+            assert_eq!(circle_at(&restored, center).fill, idle.fill);
+        }
+    }
+
+    #[test]
+    fn keyboard_icons_and_shortcut_badges_scale_with_their_node() {
+        let ctx = egui::Context::default();
+        let mut launcher = keyboard_launcher();
+        let initial = keyboard_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
+        let bind = letter_text(&initial, "X", 0);
+        let center = bind.pos + bind.galley.size() * 0.5;
+        let texture = ctx.load_texture(
+            "keyboard_test_icon",
+            egui::ColorImage::filled([8, 8], egui::Color32::WHITE),
+            egui::TextureOptions::LINEAR,
+        );
+        let texture_id = texture.id();
+        launcher.binds[0].apps[0].icon = Some("test_icon".to_string());
+        launcher
+            .icon_textures
+            .insert("test_icon".to_string(), Some(texture));
+        let icon_rect = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture_id => {
+                        Some(mesh.calc_bounds())
+                    }
+                    _ => None,
+                })
+                .expect("application icon should be drawn")
+        };
+        let idle = keyboard_frame(&ctx, &mut launcher, 0.1, Vec::new(), false);
+        let enlarged = settled_keyboard_frame(
+            &ctx,
+            &mut launcher,
+            0.2,
+            vec![egui::Event::PointerMoved(center)],
+            false,
+        );
+        assert_eq!(icon_rect(&enlarged).center(), icon_rect(&idle).center());
+        assert!((icon_rect(&enlarged).width() / icon_rect(&idle).width() - 1.5).abs() < 0.01);
+        for output in [&idle, &enlarged] {
+            let app = circle_at(output, center);
+            let label = letter_text(output, "X", 0);
+            let badge_center = label.pos + label.galley.size() * 0.5;
+            let badge = circle_at(output, badge_center);
+            assert!((badge.radius / app.radius - 0.4).abs() < 0.01);
+            assert!((badge_center.x - center.x - app.radius * 0.62).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn enlarged_keyboard_apps_accept_shortcut_actions_on_the_visible_rim() {
+        for button in [egui::PointerButton::Secondary, egui::PointerButton::Middle] {
+            let ctx = egui::Context::default();
+            let mut launcher = keyboard_launcher();
+            let initial = keyboard_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
+            let bind = letter_text(&initial, "X", 0);
+            let center = bind.pos + bind.galley.size() * 0.5;
+            let pointer = center + Vec2::new(launcher.graphic.app_radius + 4.0, 0.0);
+            let enlarged = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                0.1,
+                vec![egui::Event::PointerMoved(pointer)],
+                false,
+            );
+            assert!(pointer.distance(center) < circle_at(&enlarged, center).radius);
+            for (time, pressed) in [(0.4, true), (0.45, false)] {
+                keyboard_frame(
+                    &ctx,
+                    &mut launcher,
+                    time,
+                    vec![egui::Event::PointerButton {
+                        pos: pointer,
+                        button,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                    false,
+                );
+            }
+            if button == egui::PointerButton::Secondary {
+                assert_eq!(launcher.pending_assign.unwrap().app.name, "alpha");
+            } else {
+                let pending = launcher.pending_delete.unwrap();
+                assert_eq!((pending.group_index, pending.app_index), (0, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn keyboard_group_badges_enlarge_highlight_and_select_at_their_visible_edge() {
+        let ctx = egui::Context::default();
+        let mut launcher = keyboard_launcher();
+        let initial = keyboard_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
+        let bind = letter_text(&initial, "A", 0);
+        let center = bind.pos + bind.galley.size() * 0.5;
+        let idle = circle_at(&initial, center);
+        let pointer = center - Vec2::new(0.0, idle.radius + 1.0);
+        let hovered = settled_keyboard_frame(
+            &ctx,
+            &mut launcher,
+            0.1,
+            vec![egui::Event::PointerMoved(pointer)],
+            false,
+        );
+        let enlarged = circle_at(&hovered, center);
+        assert!(enlarged.radius > idle.radius);
+        assert!((enlarged.radius / idle.radius - 1.25).abs() < 0.01);
+        assert_ne!(enlarged.fill, idle.fill);
+        assert!(pointer.distance(center) < enlarged.radius);
+        assert_eq!(launcher.selected_group, None);
+        for (time, target) in [
+            (0.4, center),
+            (0.7, center + Vec2::new(enlarged.radius - 1.0, 0.0)),
+            (
+                1.0,
+                center
+                    + Vec2::new(
+                        0.0,
+                        launcher.graphic.segment_radius - launcher.graphic.center_radius - 1.0,
+                    ),
+            ),
+        ] {
+            let moved = settled_keyboard_frame(
+                &ctx,
+                &mut launcher,
+                time,
+                vec![egui::Event::PointerMoved(target)],
+                false,
+            );
+            assert!((circle_at(&moved, center).radius - enlarged.radius).abs() < 0.01);
+            assert_eq!(circle_at(&moved, center).fill, enlarged.fill);
+        }
+        for (time, pressed) in [(1.3, true), (1.35, false)] {
+            keyboard_frame(
+                &ctx,
+                &mut launcher,
+                time,
+                vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::PointerButton {
+                        pos: pointer,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                false,
+            );
+        }
+        assert_eq!(launcher.selected_group, Some(0));
     }
 
     #[test]

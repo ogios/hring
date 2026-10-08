@@ -4,7 +4,7 @@
 // the Free Software Foundation, version 3.
 
 use core::f32;
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, sync::Arc};
 
 use egui::{
     self, Align2, Color32, FontId, Key, Pos2, Stroke, Vec2, ViewportCommand,
@@ -17,6 +17,35 @@ use crate::{app::Hring, data::App, icon};
 /// How many decoded icons are uploaded per frame. Spreading them keeps a large
 /// batch from turning a single repaint into a visible hang.
 const ICON_UPLOADS_PER_FRAME: usize = 16;
+
+/// Animated feedback for a node in the keyboard graph.
+#[derive(Clone, Copy)]
+pub(crate) struct HoverEffect {
+    pub scale: f32,
+    pub highlight: f32,
+}
+
+/// The same rotated title geometry is used for painting and pointer input.
+pub(crate) struct AppTitleLayout {
+    galley: Arc<egui::Galley>,
+    position: Pos2,
+    angle: f32,
+    bounds: egui::Rect,
+}
+
+impl AppTitleLayout {
+    fn local_position(&self, position: Pos2) -> Pos2 {
+        (Rot2::from_angle(-self.angle) * (position - self.position)).to_pos2()
+    }
+
+    pub fn contains(&self, position: Pos2) -> bool {
+        self.bounds.contains(self.local_position(position))
+    }
+
+    pub fn distance(&self, position: Pos2) -> f32 {
+        self.bounds.distance_to_pos(self.local_position(position))
+    }
+}
 
 impl Hring {
     pub fn get_key(key: &str) -> Option<Key> {
@@ -61,6 +90,7 @@ impl Hring {
         end: f32,
         is_selected: bool,
         group_bind: String,
+        hover: HoverEffect,
     ) {
         let g = &self.graphic;
 
@@ -91,6 +121,20 @@ impl Hring {
             )
         };
 
+        let segment_color = segment_color.lerp_to_gamma(
+            Self::lighten(Self::get_color32(g.segment_color_active), 0.18),
+            hover.highlight,
+        );
+        let segment_bind_color = segment_bind_color.lerp_to_gamma(
+            Self::lighten(Self::get_color32(g.segment_bind_color_active), 0.18),
+            hover.highlight,
+        );
+        let segment_bind_font_color = segment_bind_font_color.lerp_to_gamma(
+            Self::get_color32(g.segment_bind_font_color_active),
+            hover.highlight,
+        );
+        let radius = g.segment_radius * hover.scale;
+
         let mut points: Vec<Pos2> = Vec::new();
 
         let step = (end - start) / (f32::from(g.segment_points_count));
@@ -101,8 +145,8 @@ impl Hring {
             points.push(
                 center
                     + Vec2::new(
-                        g.segment_radius * (start + (step * f32::from(i))).cos(),
-                        g.segment_radius * -(start + (step * f32::from(i))).sin(),
+                        radius * (start + (step * f32::from(i))).cos(),
+                        radius * -(start + (step * f32::from(i))).sin(),
                     ),
             );
         }
@@ -119,12 +163,16 @@ impl Hring {
                 g.segment_radius * mid_rad.cos(),
                 g.segment_radius * -mid_rad.sin(),
             );
-        painter.circle_filled(bind_pos, g.segment_bind_radius, segment_bind_color);
+        painter.circle_filled(
+            bind_pos,
+            g.segment_bind_radius * hover.scale,
+            segment_bind_color,
+        );
         painter.text(
             bind_pos,
             Align2::CENTER_CENTER,
             group_bind,
-            FontId::monospace(segment_bind_font_size),
+            FontId::monospace(segment_bind_font_size * hover.scale),
             segment_bind_font_color,
         );
     }
@@ -273,6 +321,7 @@ impl Hring {
         crt_app_rad: f32,
         is_selected: bool,
         app: &App,
+        hover: HoverEffect,
     ) {
         let g = &self.graphic;
 
@@ -290,13 +339,22 @@ impl Hring {
             )
         };
 
+        let app_color = app_color.lerp_to_gamma(
+            Self::lighten(Self::get_color32(g.app_color_active), 0.18),
+            hover.highlight,
+        );
+        let app_font_color = app_font_color
+            .lerp_to_gamma(Self::get_color32(g.app_font_color_active), hover.highlight);
+        let app_font_size = app_font_size * hover.scale;
+        let radius = g.app_radius * hover.scale;
+
         let app_pos = center
             + Vec2::new(
                 g.app_offset * crt_app_rad.cos(),
                 g.app_offset * -crt_app_rad.sin(),
             );
 
-        painter.circle_filled(app_pos, g.app_radius, app_color);
+        painter.circle_filled(app_pos, radius, app_color);
 
         let texture = app
             .icon
@@ -305,7 +363,7 @@ impl Hring {
             .and_then(|texture| texture.as_ref());
 
         if let Some(texture) = texture {
-            let icon_rect = egui::Rect::from_center_size(app_pos, Vec2::splat(g.app_radius * 1.5));
+            let icon_rect = egui::Rect::from_center_size(app_pos, Vec2::splat(radius * 1.5));
 
             painter.image(
                 texture.id(),
@@ -321,6 +379,7 @@ impl Hring {
                 app_color,
                 app_font_color,
                 app_font_size,
+                radius,
             );
         } else {
             painter.text(
@@ -343,9 +402,10 @@ impl Hring {
         badge_color: Color32,
         text_color: Color32,
         font_size: f32,
+        app_radius: f32,
     ) {
-        let badge_radius = self.graphic.app_radius * 0.4;
-        let badge_offset = self.graphic.app_radius * 0.62;
+        let badge_radius = app_radius * 0.4;
+        let badge_offset = app_radius * 0.62;
         let badge_pos = app_pos + Vec2::new(badge_offset, badge_offset);
 
         painter.circle_filled(badge_pos, badge_radius, badge_color);
@@ -358,37 +418,25 @@ impl Hring {
         );
     }
 
-    pub fn draw_app_text(
+    pub fn layout_app_title(
         &self,
         painter: &egui::Painter,
         app_name: &str,
-        center: Pos2,
+        app_pos: Pos2,
         app_rad: f32,
         is_selected: bool,
-    ) {
+        scale: f32,
+    ) -> AppTitleLayout {
         let g = &self.graphic;
-
-        let (font_color, background_color, font_size) = if is_selected {
-            (
-                Self::get_color32(g.app_title_font_color_active),
-                Self::get_color32(g.app_title_background_color_active),
-                g.app_title_font_size_active,
-            )
+        let font_size = if is_selected {
+            g.app_title_font_size_active
         } else {
-            (
-                Self::get_color32(g.app_title_font_color_unactive),
-                Self::get_color32(g.app_title_background_color_unactive),
-                g.app_title_font_size_unactive,
-            )
+            g.app_title_font_size_unactive
         };
-
-        let app_pos =
-            center + Vec2::new(g.app_offset * app_rad.cos(), g.app_offset * -app_rad.sin());
-
         let galley = painter.layout_no_wrap(
             app_name.to_string(),
-            FontId::monospace(font_size),
-            font_color,
+            FontId::monospace(font_size * scale),
+            Color32::PLACEHOLDER,
         );
 
         let ray_direction = egui::vec2(app_rad.cos(), -app_rad.sin());
@@ -396,34 +444,74 @@ impl Hring {
         let (text_angle, mut text_pos) = if app_rad.cos() < 0.0 {
             (
                 -app_rad + f32::consts::PI,
-                app_pos + ray_direction * (g.app_title_offset + galley.size().x),
+                app_pos + ray_direction * (g.app_title_offset * scale + galley.size().x),
             )
         } else {
-            (-app_rad, app_pos + ray_direction * g.app_title_offset)
+            (
+                -app_rad,
+                app_pos + ray_direction * g.app_title_offset * scale,
+            )
         };
 
         let text_rotation = Rot2::from_angle(text_angle);
         text_pos += text_rotation * egui::vec2(0.0, -galley.size().y / 2.0);
 
         let padding = egui::vec2(
-            g.app_title_background_paddings.0,
-            g.app_title_background_paddings.1,
+            g.app_title_background_paddings.0 * scale,
+            g.app_title_background_paddings.1 * scale,
         );
         let local_rect = egui::Rect::from_min_max(
             egui::pos2(-padding.x, -padding.y),
             egui::pos2(galley.size().x + padding.x, galley.size().y + padding.y),
         );
 
+        AppTitleLayout {
+            galley,
+            position: text_pos,
+            angle: text_angle,
+            bounds: local_rect,
+        }
+    }
+
+    pub fn draw_app_text(
+        &self,
+        painter: &egui::Painter,
+        title: AppTitleLayout,
+        is_selected: bool,
+        hover: HoverEffect,
+    ) {
+        let g = &self.graphic;
+        let (font_color, background_color) = if is_selected {
+            (
+                Self::get_color32(g.app_title_font_color_active),
+                Self::get_color32(g.app_title_background_color_active),
+            )
+        } else {
+            (
+                Self::get_color32(g.app_title_font_color_unactive),
+                Self::get_color32(g.app_title_background_color_unactive),
+            )
+        };
+        let background_color = background_color.lerp_to_gamma(
+            Self::lighten(Self::get_color32(g.app_title_background_color_active), 0.18),
+            hover.highlight,
+        );
+        let font_color = font_color.lerp_to_gamma(
+            Self::get_color32(g.app_title_font_color_active),
+            hover.highlight,
+        );
+        let text_rotation = Rot2::from_angle(title.angle);
+
         let corners = [
-            local_rect.left_top(),
-            local_rect.right_top(),
-            local_rect.right_bottom(),
-            local_rect.left_bottom(),
+            title.bounds.left_top(),
+            title.bounds.right_top(),
+            title.bounds.right_bottom(),
+            title.bounds.left_bottom(),
         ];
 
         let bg_points: Vec<Pos2> = corners
             .iter()
-            .map(|cornet| text_pos + text_rotation * cornet.to_vec2())
+            .map(|corner| title.position + text_rotation * corner.to_vec2())
             .collect();
 
         painter.add(PathShape::convex_polygon(
@@ -433,13 +521,13 @@ impl Hring {
         ));
 
         painter.add(egui::epaint::TextShape {
-            pos: text_pos,
-            galley,
+            pos: title.position,
+            galley: title.galley,
             underline: Stroke::NONE,
             fallback_color: font_color,
             override_text_color: None,
             opacity_factor: 1.0,
-            angle: text_angle,
+            angle: title.angle,
         });
     }
 

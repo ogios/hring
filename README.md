@@ -32,6 +32,8 @@ Press `Esc` to cancel any of these prompts. `binds.toml` is updated automaticall
 
 The window has two pages, selected with the tabs at the top: **Keyboard** (the launcher graph) and **All Programs** (the searchable application list). You can also switch with `Ctrl+H` for the keyboard page and `Ctrl+L` for the application list.
 
+On **Keyboard**, application nodes and group buttons grow smoothly as the pointer approaches. The application area includes its icon and the full rotated title background. Entering either area highlights the node using the current theme and enlarges it to its maximum size; moving within that area keeps the size constant. Icons, shortcut badges, and application labels scale together. Moving away restores the size and color, and mouse actions follow the enlarged icon and title areas.
+
 **All Programs** groups applications by their initial from **A** to **Z**, with a letter heading and divider above each group. Names starting with other characters appear in a final **#** group. Search results keep the same grouping.
 
 The initial application list starts at the top. Centered positioning is used after you click or type a group letter.
