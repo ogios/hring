@@ -152,7 +152,10 @@ pub struct Hring {
     pub all_apps_scroll_to_selected: bool,
     /// Letter selected by the index and the time its temporary emphasis began.
     pub all_apps_group_focus: Option<(char, f64)>,
-    /// "Search mode" of the "All Programs" page: started by `/`, left with
+    /// Enable leading space for centered jumps only after a group is requested.
+    pub all_apps_center_groups: bool,
+    /// "Search mode" of the "All Programs" page: started by clicking the
+    /// filter field or pressing `/`, left with
     /// `Escape`. While it is set the grid keeps the filter field focused and
     /// the navigation keys type instead of moving.
     pub all_apps_search_active: bool,
@@ -317,6 +320,7 @@ impl Hring {
             all_apps_scroll_step: 120.0,
             all_apps_scroll_to_selected: false,
             all_apps_group_focus: None,
+            all_apps_center_groups: false,
             all_apps_search_active: false,
         }
     }

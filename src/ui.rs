@@ -238,6 +238,7 @@ impl Hring {
             sort_app_groups(&mut apps);
             self.apps = apps;
             self.all_apps_group_focus = None;
+            self.all_apps_center_groups = false;
         }
 
         // Start the background icon decoder and upload whatever it finished
@@ -547,7 +548,14 @@ impl Hring {
         let mut group_focus = self
             .all_apps_group_focus
             .filter(|_| group_focus_strength(self.all_apps_group_focus, now) > 0.0);
-        let mut jump_to_letter = None;
+        let mut center_groups = self.all_apps_center_groups;
+        // A heading click happens after padding has been laid out. Complete
+        // the first centered jump on the next frame with its new leading space.
+        let mut jump_to_letter = if center_groups {
+            None
+        } else {
+            group_focus.map(|(letter, _)| letter)
+        };
         if !input_locked
             && !search_active
             && let Some(letter) = pressed_app_letter(ctx)
@@ -730,12 +738,19 @@ impl Hring {
                                 .inner
                             });
 
-                        // Search mode (`/`) keeps the filter field focused; it
+                        // A mouse click enters the same search mode as `/`.
+                        // Preserve focus as soon as the pointer press gives it
+                        // to the field, before the click is released.
+                        let text_edit = search_bar.inner;
+                        if !input_locked && (text_edit.clicked() || text_edit.gained_focus()) {
+                            self.all_apps_search_active = true;
+                        }
+
+                        // Search mode keeps the filter field focused; it
                         // is re-requested every frame, so a lost focus can never
                         // leave the page unable to filter again. Leaving search
                         // mode (`Escape`) hands the keyboard back to navigation.
-                        let text_edit = search_bar.inner;
-                        if search_active {
+                        if self.all_apps_search_active {
                             if !text_edit.has_focus() {
                                 text_edit.request_focus();
                             }
@@ -769,6 +784,7 @@ impl Hring {
                             group_focus = Some((letter, now));
                             selected_app = apps.iter().position(|app| app_letter_group(&app.name) == letter);
                         }
+                        center_groups |= jump_to_letter.is_some();
 
                         // Named so the scroll offset can be driven by the
                         // keyboard (`PageDown`/`PageUp`) as well as the wheel.
@@ -840,8 +856,9 @@ impl Hring {
                             }
 
                             let rows = grouped_app_rows(apps, columns);
-                            // Enough leading space to center the first group too.
-                            if let Some(first) = apps.first() {
+                            // Start flush with the top; add leading space only
+                            // after the user requests a centered group jump.
+                            if center_groups && let Some(first) = apps.first() {
                                 let letter = app_letter_group(&first.name);
                                 let first_rows = rows.iter().take_while(|row| app_letter_group(&apps[row.start].name) == letter).count();
                                 let group_height = font_size.max(24.0) + 14.0
@@ -1093,6 +1110,7 @@ impl Hring {
         self.all_apps_scroll_step = measured_scroll_step;
         self.selected_app = selected_app;
         self.all_apps_group_focus = group_focus;
+        self.all_apps_center_groups = center_groups;
         if group_focus.is_some() {
             ctx.request_repaint();
         }
@@ -1455,6 +1473,7 @@ impl Hring {
             // The list changes under the cursor; start again from the top.
             self.selected_app = Some(0);
             self.all_apps_group_focus = None;
+            self.all_apps_center_groups = false;
             self.all_apps_scroll_to_selected = true;
             self.to_search_worker
                 .send(self.search_text.clone())
@@ -1825,6 +1844,7 @@ mod tests {
             all_apps_scroll_step: 120.0,
             all_apps_scroll_to_selected: false,
             all_apps_group_focus: None,
+            all_apps_center_groups: false,
             all_apps_search_active: false,
         }
     }
@@ -1889,6 +1909,119 @@ mod tests {
             pressed: true,
             repeat: false,
             modifiers,
+        }
+    }
+
+    #[test]
+    fn clicking_search_enters_search_mode_filters_and_escape_restores_navigation() {
+        for names in [&["alpha", "juliet", "zulu"][..], &[][..]] {
+            let ctx = egui::Context::default();
+            let mut launcher = test_launcher(names);
+            let (sender, searches) = std::sync::mpsc::channel();
+            launcher.to_search_worker = sender;
+            let frame = |launcher: &mut Hring, time, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            Vec2::new(1000.0, 700.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| launcher.update_ui(ctx),
+                )
+            };
+            frame(&mut launcher, 0.0, Vec::new());
+            let initial = frame(&mut launcher, 0.5, Vec::new());
+            let hint = letter_text(&initial, "Search applications...", 0);
+            let pointer = hint.pos + hint.galley.size() * 0.5;
+
+            for (time, pressed) in [(0.6, true), (0.65, false)] {
+                frame(
+                    &mut launcher,
+                    time,
+                    vec![
+                        egui::Event::PointerMoved(pointer),
+                        egui::Event::PointerButton {
+                            pos: pointer,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+                assert!(launcher.all_apps_search_active);
+                assert!(ctx.memory(|memory| memory.focused().is_some()));
+            }
+            frame(
+                &mut launcher,
+                0.7,
+                vec![
+                    key_event(Key::J, egui::Modifiers::NONE),
+                    egui::Event::Text("j".to_string()),
+                ],
+            );
+            assert_eq!(launcher.search_text, "j");
+            assert_eq!(searches.try_recv().unwrap(), "j");
+            assert!(launcher.all_apps_group_focus.is_none());
+
+            let escaped = frame(
+                &mut launcher,
+                0.8,
+                vec![key_event(Key::Escape, egui::Modifiers::NONE)],
+            );
+            assert!(!launcher.all_apps_search_active);
+            assert!(ctx.memory(|memory| memory.focused().is_none()));
+            assert!(
+                !escaped
+                    .viewport_output
+                    .values()
+                    .any(|viewport| { viewport.commands.contains(&ViewportCommand::Close) })
+            );
+            frame(
+                &mut launcher,
+                0.9,
+                vec![
+                    key_event(Key::Z, egui::Modifiers::NONE),
+                    egui::Event::Text("z".to_string()),
+                ],
+            );
+            assert_eq!(launcher.search_text, "j");
+            assert_eq!(
+                launcher.all_apps_group_focus.map(|(letter, _)| letter),
+                if names.is_empty() { None } else { Some('Z') },
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_search_while_input_locked_does_not_enter_search_mode() {
+        let ctx = egui::Context::default();
+        let mut launcher = test_launcher(&["alpha"]);
+        grid_frame(&ctx, &mut launcher, 0.0, Vec::new(), true);
+        let initial = grid_frame(&ctx, &mut launcher, 0.05, Vec::new(), true);
+        let hint = letter_text(&initial, "Search applications...", 0);
+        let pointer = hint.pos + hint.galley.size() * 0.5;
+        for (time, pressed) in [(0.1, true), (0.15, false)] {
+            grid_frame(
+                &ctx,
+                &mut launcher,
+                time,
+                vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::PointerButton {
+                        pos: pointer,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                true,
+            );
+            assert!(!launcher.all_apps_search_active);
+            assert!(ctx.memory(|memory| memory.focused().is_none()));
         }
     }
 
@@ -2075,6 +2208,51 @@ mod tests {
         );
     }
 
+    fn assert_first_group_at_top(output: &egui::FullOutput) {
+        let heading = letter_text(output, "A", 1);
+        let viewport_top = letter_clip(output, "A", 1).top();
+        assert!(
+            (heading.pos.y - viewport_top).abs() < 8.0,
+            "initial heading={} viewport top={viewport_top}",
+            heading.pos.y
+        );
+    }
+
+    #[test]
+    fn initial_list_starts_at_top_and_heading_click_centers_without_snapping_back() {
+        let ctx = egui::Context::default();
+        let mut launcher = test_launcher(&["alpha", "bravo", "zulu"]);
+        grid_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
+        let initial = grid_frame(&ctx, &mut launcher, 0.05, Vec::new(), false);
+        assert_first_group_at_top(&initial);
+        let heading = letter_text(&initial, "A", 1);
+        let pointer = heading.pos + heading.galley.size() * 0.5;
+        for (time, pressed) in [(0.1, true), (0.15, false)] {
+            grid_frame(
+                &ctx,
+                &mut launcher,
+                time,
+                vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::PointerButton {
+                        pos: pointer,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                false,
+            );
+        }
+        grid_frame(&ctx, &mut launcher, 0.2, Vec::new(), false);
+        grid_frame(&ctx, &mut launcher, 0.7, Vec::new(), false);
+        let centered = grid_frame(&ctx, &mut launcher, 0.8, Vec::new(), false);
+        assert_group_is_centered(&centered, "A");
+        let restored = grid_frame(&ctx, &mut launcher, 2.3, Vec::new(), false);
+        assert!(launcher.all_apps_group_focus.is_none());
+        assert_group_is_centered(&restored, "A");
+    }
+
     fn index_button_rect(output: &egui::FullOutput, letter: &str) -> egui::Rect {
         let text = letter_text(output, letter, 0);
         let center = text.pos + text.galley.size() * 0.5;
@@ -2098,7 +2276,7 @@ mod tests {
         let mut launcher = test_launcher(&["alpha", "bravo", "zulu"]);
         grid_frame(&ctx, &mut launcher, 0.0, Vec::new(), false);
         let initial = grid_frame(&ctx, &mut launcher, 0.05, Vec::new(), false);
-        assert_group_is_centered(&initial, "A");
+        assert_first_group_at_top(&initial);
         let button = index_button_rect(&initial, "A");
         let next = index_button_rect(&initial, "B");
         assert!(button.center().x < 120.0);
